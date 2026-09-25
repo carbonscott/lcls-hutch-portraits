@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Portraits of the LCLS Instruments</title>
-<meta name="description" content="Nine painted portraits of the instruments at SLAC's LCLS X-ray laser: what each one does for science, and how that reaches everyday life.">
+<meta name="description" content="Ten painted portraits of the instruments at SLAC's LCLS user facility, nine that use its X-ray laser and one, MeV-UED, that uses pulses of electrons: what each one does for science, and how that reaches everyday life.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,400&family=Source+Serif+4:opsz,wght@8..60,400;8..60,700&display=swap" rel="stylesheet">
@@ -19,9 +19,11 @@
   <div class="xray-streak" aria-hidden="true"></div>
   <p class="intro">
     LCLS is an X-ray laser that makes flashes of light a few femtoseconds long.
-    Its instruments, each in its own experimental hutch, use those flashes to watch
-    atoms and electrons move. These nine paintings don't show the hardware. They show
-    what each instrument lets scientists see, and where that work shows up in
+    Nine instruments, each in its own experimental hutch, use those flashes to watch
+    atoms and electrons move. The LCLS user facility also runs a tenth instrument,
+    MeV-UED, an “electron camera” that sends short pulses of fast electrons through a
+    sample in place of X-ray light. These ten paintings don't show the hardware. They
+    show what each instrument lets scientists see, and where that work shows up in
     everyday life.
   </p>
 
@@ -35,6 +37,8 @@
         <span>A violet-to-cyan streak is an <strong>X-ray pulse</strong> from LCLS.</span></li>
       <li><span class="swatch swatch-laser" aria-hidden="true"></span>
         <span>A red streak is an <strong>optical laser</strong> that starts the action.</span></li>
+      <li><span class="swatch swatch-electron" aria-hidden="true"></span>
+        <span>A swarm of green beads is a <strong>pulse of electrons</strong> (MeV-UED only).</span></li>
       <li><span class="swatch swatch-ribbon" aria-hidden="true"></span>
         <span>The <strong>ribbon</strong> joins the two halves: “this discovery leads to this.”</span></li>
     </ul>
@@ -52,6 +56,7 @@
     <li><a href="#mfx"><img src="images/mfx.png" alt="">MFX</a></li>
     <li><a href="#cxi"><img src="images/cxi.png" alt="">CXI</a></li>
     <li><a href="#mec"><img src="images/mec.png" alt="">MEC</a></li>
+    <li><a href="#ued"><img src="images/ued.png" alt="">MeV-UED</a></li>
   </ul>
 </nav>
 
@@ -380,6 +385,46 @@
   </figcaption>
 </figure>
 
+<figure class="plate" id="ued">
+  <a class="plate-image" href="images/ued.png">
+    <img src="images/ued.png" width="900" height="1200" loading="lazy"
+         alt="A red laser hits a thin crystal pane of blue diamonds with gold atoms between them, while green beads with speed lines fly through the pane and spread out into rings of green dots. A blue ribbon leads down to a solar panel under the sun.">
+  </a>
+  <figcaption>
+    <p class="acronym">MeV-UED</p>
+    <p class="full-name">Megaelectronvolt Ultrafast Electron Diffraction</p>
+    <p class="metaphor">“An electron camera films a solar crystal flexing in the light.”</p>
+    <div class="caption-part">
+      <h3>In the picture</h3>
+      <p>A red laser flash hits a thin pane of crystal, a checkerboard of blue diamonds
+      with gold atoms between them. Near the flash, the diamonds tilt out of line. A
+      swarm of green beads (electrons, not light) flies straight through the pane and
+      spreads out behind it into rings of green dots. A blue ribbon leads down to a
+      solar panel turned toward the sun.</p>
+    </div>
+    <div class="caption-part science">
+      <h3>The science</h3>
+      <p>MeV-UED's probe is not the X-ray laser but a short pulse of electrons, made by
+      its own electron source (a “photocathode rf gun”) with millions of electron-volts
+      of energy (that is what “MeV” means). A laser flash starts a change in a very thin
+      sample, and an electron pulse passes through it a moment later. The electrons
+      scatter off the atoms into a diffraction pattern of rings and spots. Put together,
+      the patterns make a movie of the atoms moving.</p>
+    </div>
+    <div class="caption-part everyday">
+      <h3>In everyday life</h3>
+      <p>Perovskites are crystals used to make a new kind of solar cell. MeV-UED has made
+      atomic-level movies of how light bends and twists these crystals. Knowing how they
+      respond to light can help make solar panels that turn more sunlight into
+      electricity and last longer.</p>
+    </div>
+    <ul class="plate-links">
+      <li><a href="https://lcls.slac.stanford.edu/instruments/mev-ued">MeV-UED at LCLS ↗</a></li>
+      <li><a href="sketches/ued.html">Live p5.brush sketch</a></li>
+    </ul>
+  </figcaption>
+</figure>
+
 </main>
 
 <footer class="site-footer">
@@ -389,8 +434,8 @@
   open the full-size image, or open its live sketch to watch it paint in your browser.</p>
   <p>The science text is based on the instrument pages at
   <a href="https://lcls.slac.stanford.edu/instruments">lcls.slac.stanford.edu</a>.
-  Some of the everyday-life examples (such as vaccines, skin, homes, trains and
-  medicines) are our own plain-language extensions of what those pages say.</p>
+  Some of the everyday-life examples (such as vaccines, skin, homes, trains, medicines
+  and solar panels) are our own plain-language extensions of what those pages say.</p>
   <p>This is a personal art project, not an official SLAC or LCLS website.</p>
 </footer>
 

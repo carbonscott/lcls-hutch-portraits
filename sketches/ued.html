@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ued: an electron camera films a solar crystal flexing in the light</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// MeV-UED portrait.
+// Top (science): a thin pane of perovskite crystal (a checkerboard of
+// corner-sharing blue diamonds, a dark atom in each, a gold atom in each gap),
+// seen at an angle. A vermilion laser flash hits the pane and the diamonds
+// near the flash tilt out of line. A packet of green electron beads with
+// speed lines flies in from the left, passes through the pane (some beads in
+// front of it, some already behind it) and fans out into dotted rings of the
+// same green beads floating in open paper: the electron diffraction pattern.
+// Bottom (everyday): a big solar panel on a simple stand, tilted up toward a
+// small sun.
+// Ribbon: a blue band of downward chevrons flows from the rings to the panel.
+//
+// Coordinates: canvas centre is the origin, x -450..450, y -600..600, y down.
+// The only green in the picture is the electron beads.
+
+const SEED = 5404;
+const PAPER = "#f1e8d6";
+
+// Series colour conventions.
+const LASER_VERMILION = "#e34a27";
+const BEAD_GREEN = "#22b14c";
+const BEAD_EDGE = "#0e5a2a";
+const BEAD_GLOSS = "#bff0cb";
+
+// Crystal pane: four screen corners (the right edge is further away).
+const PANE_TOP_LEFT = [-250, -500];
+const PANE_TOP_RIGHT = [40, -455];
+const PANE_BOTTOM_RIGHT = [40, -95];
+const PANE_BOTTOM_LEFT = [-250, -50];
+const PANE_GLASS = "#d3e0e6";
+const PANE_EDGE = "#8ea4b0";
+const INK = "#1d2733";
+const DIAMOND_BLUE = "#5a83bd";
+const DIAMOND_EDGE = "#1b2a44";
+const CENTRE_ATOM = "#2a2530";
+const GAP_ATOM = "#e3a92f";
+const GAP_ATOM_EDGE = "#6b4a12";
+const LATTICE_CELLS = 5;               // 5 x 5 diamonds
+const FLASH_U = 0.42;                  // where the laser lands, in pane coordinates
+const FLASH_V = 0.46;
+
+// Diffraction rings behind the pane.
+const RINGS_X = 272;
+
+// Everyday scene.
+const SUN_X = -300;
+const SUN_Y = 175;
+const SUN_RADIUS = 50;
+// The panel is turned a little so that its face points up toward the sun.
+const PANEL_TOP_LEFT = [-205, 262];
+const PANEL_TOP_RIGHT = [305, 232];
+const PANEL_BOTTOM_RIGHT = [385, 452];
+const PANEL_BOTTOM_LEFT = [-250, 490];
+const PANEL_COLUMNS = 6;
+const PANEL_ROWS = 4;
+const CELL_BLUE = "#1d3f86";
+const CELL_LINE = "#dce8f5";
+const FRAME_SILVER = "#b3bac2";
+const FRAME_EDGE = "#2c3440";
+const GROUND_Y = 585;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- small geometry helpers ----------
+
+function lerpPoint(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+// Bilinear map from (u, v) in [0, 1] x [0, 1] to a screen quadrilateral.
+function quadPoint(corners, u, v) {
+  const top = lerpPoint(corners[0], corners[1], u);
+  const bottom = lerpPoint(corners[3], corners[2], u);
+  return lerpPoint(top, bottom, v);
+}
+
+function paneCorners() {
+  return [PANE_TOP_LEFT, PANE_TOP_RIGHT, PANE_BOTTOM_RIGHT, PANE_BOTTOM_LEFT];
+}
+
+function panePoint(u, v) {
+  return quadPoint(paneCorners(), u, v);
+}
+
+function panelCorners() {
+  return [PANEL_TOP_LEFT, PANEL_TOP_RIGHT, PANEL_BOTTOM_RIGHT, PANEL_BOTTOM_LEFT];
+}
+
+// y of the straight edge from a to b at a given x.
+function edgeY(a, b, x) {
+  return a[1] + (b[1] - a[1]) * ((x - a[0]) / (b[0] - a[0]));
+}
+
+function densify(points, maxStep) {
+  const result = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const pieces = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / maxStep));
+    for (let k = 0; k < pieces; k++) {
+      result.push([x1 + (x2 - x1) * (k / pieces), y1 + (y2 - y1) * (k / pieces)]);
+    }
+  }
+  return result;
+}
+
+function bezierPoints(p0, p1, p2, p3, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t) * (1 - t);
+    const b = 3 * (1 - t) * (1 - t) * t;
+    const c = 3 * (1 - t) * t * t;
+    const d = t * t * t;
+    points.push([
+      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+    ]);
+  }
+  return points;
+}
+
+function tangentAt(points, i) {
+  const before = points[Math.max(0, i - 1)];
+  const after = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(after[0] - before[0], after[1] - before[1]) || 1;
+  const tx = (after[0] - before[0]) / length;
+  const ty = (after[1] - before[1]) / length;
+  return { tx, ty, nx: -ty, ny: tx };
+}
+
+function setWatercolour(colour, opacity, bleed, texture, border) {
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, border);
+}
+
+function washPolygon(points, colour, opacity) {
+  brush.noStroke();
+  brush.wash(colour, opacity);
+  brush.polygon(points);
+  brush.noWash();
+}
+
+function inkPolygon(points, colour, weight) {
+  brush.set("pen", colour, weight);
+  brush.beginShape(0);
+  for (const [x, y] of points) brush.vertex(x, y);
+  brush.endShape(true);
+}
+
+// ---------- the electron beads ----------
+
+// One electron: a round saturated green bead with a small gloss dot.
+function paintBead(x, y, radius) {
+  brush.set("pen", BEAD_EDGE, 1.3);
+  brush.wash(BEAD_GREEN, 255);
+  brush.circle(x, y, radius);
+  brush.noWash();
+  brush.noStroke();
+  brush.wash(BEAD_GLOSS, 225);
+  brush.circle(x - radius * 0.36, y - radius * 0.38, radius * 0.28);
+  brush.noWash();
+}
+
+// Three short speed lines trailing behind a bead that moves in direction `angle`
+// (screen angle: 0 = right, positive = down).
+function paintSpeedLines(x, y, radius, angle, weight, minLength, maxLength) {
+  const ux = Math.cos(angle);
+  const uy = Math.sin(angle);
+  const nx = -uy;
+  const ny = ux;
+  for (let k = -1; k <= 1; k++) {
+    const offset = k * radius * 0.6;
+    const length = random(minLength, maxLength) * (k === 0 ? 1.2 : 0.8);
+    const back = Math.sqrt(radius * radius - offset * offset) + 5;
+    const startX = x + nx * offset - ux * back;
+    const startY = y + ny * offset - uy * back;
+    brush.set("pen", BEAD_EDGE, weight);
+    brush.line(startX, startY, startX - ux * length, startY - uy * length);
+  }
+}
+
+function flashPoint() {
+  return panePoint(FLASH_U, FLASH_V);
+}
+
+// Beads that fly in from the left edge, in front of the pane: a compact,
+// bullet-shaped swarm in five loose lanes (so the speed lines of one bead do
+// not run into the next). [x, offset from the beam line, radius]
+const FRONT_BEADS = [
+  [-270, 1, 11], [-338, -2, 10], [-410, 3, 9.5],
+  [-292, -23, 10.5], [-362, -20, 10], [-434, -24, 9],
+  [-300, 24, 10], [-374, 21, 10.5],
+  [-322, -46, 9.5], [-396, -43, 9],
+  [-334, 46, 9.5], [-404, 44, 9],
+  // two beads already over the face of the pane
+  [-214, -21, 10.5], [-196, 25, 10],
+];
+
+// Beads already behind the pane. They are painted before the glass, so the
+// glass dims them; the two at the right edge are half hidden by it.
+const BEHIND_BEADS = [[-34, -12, 10], [34, 16, 10.5], [40, -30, 10]];
+
+// Beads that have left the back of the pane and are fanning out.
+// [x, offset, radius, direction]
+const FAN_BEADS = [[82, -52, 9.5, -0.5], [96, -12, 10, -0.12], [92, 30, 9.5, 0.25], [76, 64, 9.5, 0.55]];
+
+function paintBeadsBehindPane() {
+  const beamY = flashPoint()[1];
+  for (const [x, offset, radius] of BEHIND_BEADS) {
+    paintSpeedLines(x, beamY + offset, radius, 0, 2.0, 22, 32);
+    paintBead(x, beamY + offset, radius);
+  }
+}
+
+function paintBeadsInFront() {
+  const beamY = flashPoint()[1];
+  for (const [x, offset, radius] of FRONT_BEADS) {
+    paintSpeedLines(x, beamY + offset, radius, 0, 2.4, 26, 36);
+    paintBead(x, beamY + offset, radius);
+  }
+}
+
+function paintFanBeads() {
+  const beamY = flashPoint()[1];
+  for (const [x, offset, radius, angle] of FAN_BEADS) {
+    paintSpeedLines(x, beamY + offset, radius, angle, 2.2, 20, 28);
+    paintBead(x, beamY + offset, radius);
+  }
+}
+
+// The diffraction pattern: dotted rings of green beads and a small cluster at
+// the centre, floating in open paper.
+function paintRings() {
+  const centreY = flashPoint()[1];
+  const rings = [[50, 10, 9.5], [94, 18, 9.2], [138, 26, 8.8]];
+  for (const [ringRadius, count, beadRadius] of rings) {
+    const start = random(TWO_PI);
+    for (let k = 0; k < count; k++) {
+      const angle = start + (k / count) * TWO_PI + random(-0.05, 0.05);
+      const r = ringRadius + random(-3, 3);
+      paintBead(RINGS_X + r * Math.cos(angle), centreY + r * Math.sin(angle),
+                beadRadius * random(0.9, 1.1));
+    }
+  }
+  const cluster = [[0, 0, 9], [-15, -9, 8], [14, -11, 8], [-11, 14, 8], [15, 11, 8]];
+  for (const [dx, dy, radius] of cluster) paintBead(RINGS_X + dx, centreY + dy, radius);
+}
+
+// ---------- the crystal pane ----------
+
+function paintPaneGlass() {
+  const corners = paneCorners();
+  // Thin edge along the near (left) side and the bottom, to show the pane is thin.
+  const edgeOffset = [-9, 5];
+  const offsetPoint = (p) => [p[0] + edgeOffset[0], p[1] + edgeOffset[1]];
+  washPolygon([PANE_TOP_LEFT, PANE_BOTTOM_LEFT, offsetPoint(PANE_BOTTOM_LEFT), offsetPoint(PANE_TOP_LEFT)], PANE_EDGE, 235);
+  washPolygon([PANE_BOTTOM_LEFT, PANE_BOTTOM_RIGHT, offsetPoint(PANE_BOTTOM_RIGHT), offsetPoint(PANE_BOTTOM_LEFT)], PANE_EDGE, 235);
+  brush.set("pen", INK, 1.1);
+  brush.line(PANE_TOP_LEFT[0], PANE_TOP_LEFT[1], ...offsetPoint(PANE_TOP_LEFT));
+  brush.line(...offsetPoint(PANE_TOP_LEFT), ...offsetPoint(PANE_BOTTOM_LEFT));
+  brush.line(...offsetPoint(PANE_BOTTOM_LEFT), ...offsetPoint(PANE_BOTTOM_RIGHT));
+  brush.line(...offsetPoint(PANE_BOTTOM_RIGHT), PANE_BOTTOM_RIGHT[0], PANE_BOTTOM_RIGHT[1]);
+
+  // Glass face.
+  brush.set("pen", INK, 1.5);
+  setWatercolour(PANE_GLASS, 190, 0.04, 0.3, 0.2);
+  brush.polygon(densify(corners, 40));
+  brush.noFill();
+
+  // Warm patch where the laser heats the crystal.
+  const [fx, fy] = flashPoint();
+  brush.noStroke();
+  setWatercolour("#f2764a", 180, 0.2, 0.35, 0);
+  brush.circle(fx, fy, 92);
+  brush.noFill();
+}
+
+// Distance from the flash in pane units (0..1 across the pane).
+function flashDistance(u, v) {
+  return Math.hypot(u - FLASH_U, (v - FLASH_V) * 1.05);
+}
+
+function paintLattice() {
+  const step = 0.92 / LATTICE_CELLS;       // lattice fills u, v in [0.04, 0.96]
+  const half = step / 2;
+  const origin = 0.04;
+  // Gap atoms first (they sit in the holes between the diamonds).
+  for (let i = 1; i < LATTICE_CELLS; i++) {
+    for (let j = 1; j < LATTICE_CELLS; j++) {
+      let u = origin + i * step;
+      let v = origin + j * step;
+      const d = flashDistance(u, v);
+      const shake = 0.03 * Math.exp(-(d / 0.22) * (d / 0.22));
+      u += random(-shake, shake);
+      v += random(-shake, shake);
+      const [x, y] = panePoint(u, v);
+      brush.set("pen", GAP_ATOM_EDGE, 1.2);
+      brush.wash(GAP_ATOM, 245);
+      brush.circle(x, y, 12);
+      brush.noWash();
+      if (d < 0.2) {
+        brush.set("pen", GAP_ATOM_EDGE, 1.2);
+        const a = random(TWO_PI);
+        brush.arc(x, y, 18, a, a + 0.9);
+        brush.arc(x, y, 18, a + PI, a + PI + 0.9);
+      }
+    }
+  }
+  // Corner-sharing diamonds; near the flash they tilt, alternately left and right.
+  for (let i = 0; i < LATTICE_CELLS; i++) {
+    for (let j = 0; j < LATTICE_CELLS; j++) {
+      const uc = origin + (i + 0.5) * step;
+      const vc = origin + (j + 0.5) * step;
+      const d = flashDistance(uc, vc);
+      const strength = Math.exp(-(d / 0.32) * (d / 0.32));
+      const sign = (i + j) % 2 === 0 ? 1 : -1;
+      const tilt = sign * 0.55 * strength + random(-0.12, 0.12) * strength;
+      // Pushed a little away from the flash, plus a small random jolt.
+      const away = Math.max(d, 0.001);
+      const shiftU = (0.05 * (uc - FLASH_U) / away + random(-0.015, 0.015)) * strength;
+      const shiftV = (0.05 * (vc - FLASH_V) / away + random(-0.015, 0.015)) * strength;
+      const size = half * (1 - 0.1 * strength);
+      const corners = [];
+      for (let k = 0; k < 4; k++) {
+        const a = tilt + k * HALF_PI;
+        corners.push(panePoint(uc + shiftU + size * Math.cos(a), vc + shiftV + size * Math.sin(a)));
+      }
+      brush.set("pen", DIAMOND_EDGE, 1.4);
+      brush.wash(DIAMOND_BLUE, 238);
+      brush.polygon(corners);
+      brush.noWash();
+      brush.set("pen", "#111016", 1.0);
+      for (const [x, y] of corners) {
+        brush.wash("#4a4652", 250);
+        brush.circle(x, y, 5);
+        brush.noWash();
+      }
+      const [cx, cy] = panePoint(uc + shiftU, vc + shiftV);
+      brush.set("pen", "#111016", 1.0);
+      brush.wash(CENTRE_ATOM, 250);
+      brush.circle(cx, cy, 7);
+      brush.noWash();
+    }
+  }
+}
+
+// Vermilion laser streak from the top-left edge to the flash point.
+function paintLaser() {
+  const [x2, y2] = flashPoint();
+  const x1 = -450;
+  const y1 = -548;
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const nx = -(y2 - y1) / length;
+  const ny = (x2 - x1) / length;
+  washPolygon([
+    [x1 + nx * 7, y1 + ny * 7], [x2 + nx * 4, y2 + ny * 4],
+    [x2 - nx * 4, y2 - ny * 4], [x1 - nx * 7, y1 - ny * 7],
+  ], LASER_VERMILION, 230);
+  brush.set("pen", LASER_VERMILION, 2.4);
+  brush.line(x1, y1, x2, y2);
+  // Vermilion flash where it lands.
+  brush.noStroke();
+  brush.wash(LASER_VERMILION, 225);
+  brush.circle(x2, y2, 11);
+  brush.noWash();
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * TWO_PI + 0.15;
+    const outer = i % 2 === 0 ? 50 : 34;
+    brush.set("pen", LASER_VERMILION, 2.2);
+    brush.line(x2 + 18 * Math.cos(angle), y2 + 18 * Math.sin(angle),
+               x2 + outer * Math.cos(angle), y2 + outer * Math.sin(angle));
+  }
+}
+
+// ---------- ribbon ----------
+
+function ribbonCentreLine() {
+  const start = [RINGS_X, flashPoint()[1] + 172];
+  const end = [150, edgeY(PANEL_TOP_LEFT, PANEL_TOP_RIGHT, 150) - 4];
+  return bezierPoints(start, [start[0] + 40, start[1] + 170], [end[0] - 20, end[1] - 190], end, 40);
+}
+
+function ribbonHalfWidth(t) {
+  return 58 - 30 * t;
+}
+
+function bandPolygon(centreLine) {
+  const left = [];
+  const right = [];
+  for (let i = 0; i < centreLine.length; i++) {
+    const { nx, ny } = tangentAt(centreLine, i);
+    const w = ribbonHalfWidth(i / (centreLine.length - 1));
+    left.push([centreLine[i][0] + nx * w, centreLine[i][1] + ny * w]);
+    right.push([centreLine[i][0] - nx * w, centreLine[i][1] - ny * w]);
+  }
+  return left.concat(right.reverse());
+}
+
+function paintRibbon() {
+  const centre = ribbonCentreLine();
+  const band = bandPolygon(centre);
+  washPolygon(band, "#a6cde6", 190);
+  brush.set("pen", "#1f5273", 1.3);
+  setWatercolour("#79b1d8", 200, 0.06, 0.35, 0.25);
+  brush.polygon(band);
+  brush.noFill();
+  // Downward chevrons.
+  for (const t of [0.16, 0.4, 0.64, 0.86]) {
+    const i = Math.round(t * (centre.length - 1));
+    const { tx, ty, nx, ny } = tangentAt(centre, i);
+    const w = ribbonHalfWidth(t) * 0.62;
+    const depth = w * 0.7;
+    const thickness = 11;
+    const [px, py] = centre[i];
+    const armLeft = [px + nx * w - tx * depth, py + ny * w - ty * depth];
+    const tip = [px + tx * depth * 0.4, py + ty * depth * 0.4];
+    const armRight = [px - nx * w - tx * depth, py - ny * w - ty * depth];
+    const back = (p) => [p[0] - tx * thickness, p[1] - ty * thickness];
+    washPolygon([armLeft, tip, armRight, back(armRight), back(tip), back(armLeft)], "#1f5273", 235);
+  }
+}
+
+// ---------- everyday scene: the solar panel ----------
+
+function paintSun() {
+  brush.set("pen", "#b8791a", 1.4);
+  setWatercolour("#f6b93b", 240, 0.12, 0.35, 0.2);
+  brush.circle(SUN_X, SUN_Y, SUN_RADIUS);
+  brush.noFill();
+  for (let i = 0; i < 14; i++) {
+    const angle = (i / 14) * TWO_PI + 0.1;
+    // Rays facing the panel (down and to the right) are longer.
+    const towardPanel = Math.cos(angle - 0.45) > 0.7;
+    brush.set("pen", "#e39a1c", towardPanel ? 2.8 : 2.2);
+    const outer = towardPanel ? 118 : 88;
+    brush.line(SUN_X + 64 * Math.cos(angle), SUN_Y + 64 * Math.sin(angle),
+               SUN_X + outer * Math.cos(angle), SUN_Y + outer * Math.sin(angle));
+  }
+}
+
+function paintGround() {
+  brush.noStroke();
+  setWatercolour("#b0a38f", 180, 0.15, 0.3, 0);
+  const shadow = [];
+  for (let i = 0; i < 36; i++) {
+    const a = (i / 36) * TWO_PI;
+    shadow.push([60 + 330 * Math.cos(a), GROUND_Y + 2 + 18 * Math.sin(a)]);
+  }
+  brush.polygon(shadow);
+  brush.noFill();
+  brush.set("charcoal", "#4a4036", 1.3);
+  brush.line(-430, GROUND_Y, 430, GROUND_Y);
+}
+
+function paintStand() {
+  const legColour = "#8b939c";
+  const bottomEdge = (x) => edgeY(PANEL_BOTTOM_LEFT, PANEL_BOTTOM_RIGHT, x);
+  // [x, foot y]: two front legs at the corners, two back legs set in and a
+  // little shorter. Their tops are hidden under the panel.
+  const legs = [[-122, GROUND_Y - 8], [258, GROUND_Y - 8], [-225, GROUND_Y], [355, GROUND_Y]];
+  for (const [x, footY] of legs) {
+    const topY = bottomEdge(x) - 20;
+    const leg = [[x - 7, topY], [x + 7, topY], [x + 7, footY], [x - 7, footY]];
+    washPolygon(leg, legColour, 240);
+    inkPolygon(leg, FRAME_EDGE, 1.2);
+  }
+  // Cross bar between the back legs.
+  const bar = [[-122, 530], [258, 530], [258, 542], [-122, 542]];
+  washPolygon(bar, legColour, 240);
+  inkPolygon(bar, FRAME_EDGE, 1.2);
+}
+
+function paintPanel() {
+  const corners = panelCorners();
+  // Silver frame: the whole panel face, plus a thin front edge below it.
+  const frontEdge = [PANEL_BOTTOM_LEFT, PANEL_BOTTOM_RIGHT, [PANEL_BOTTOM_RIGHT[0], PANEL_BOTTOM_RIGHT[1] + 16], [PANEL_BOTTOM_LEFT[0], PANEL_BOTTOM_LEFT[1] + 16]];
+  washPolygon(frontEdge, "#8f98a2", 245);
+  inkPolygon(frontEdge, FRAME_EDGE, 1.4);
+  brush.set("pen", FRAME_EDGE, 1.8);
+  setWatercolour(FRAME_SILVER, 210, 0.04, 0.35, 0.25);
+  brush.polygon(densify(corners, 40));
+  brush.noFill();
+
+  // Dark-blue cell area inside the frame.
+  const inset = 0.035;
+  const cellArea = [
+    quadPoint(corners, inset, inset * 1.6), quadPoint(corners, 1 - inset, inset * 1.6),
+    quadPoint(corners, 1 - inset, 1 - inset * 1.6), quadPoint(corners, inset, 1 - inset * 1.6),
+  ];
+  washPolygon(densify(cellArea, 40), CELL_BLUE, 245);
+  brush.noStroke();
+  setWatercolour("#16306a", 200, 0.03, 0.45, 0.2);
+  brush.polygon(densify(cellArea, 40));
+  brush.noFill();
+
+  // Light grid lines between the cells.
+  const cellPoint = (u, v) => quadPoint(cellArea, u, v);
+  brush.set("pen", CELL_LINE, 1.8);
+  for (let c = 1; c < PANEL_COLUMNS; c++) {
+    const [x1, y1] = cellPoint(c / PANEL_COLUMNS, 0);
+    const [x2, y2] = cellPoint(c / PANEL_COLUMNS, 1);
+    brush.line(x1, y1, x2, y2);
+  }
+  for (let r = 1; r < PANEL_ROWS; r++) {
+    const [x1, y1] = cellPoint(0, r / PANEL_ROWS);
+    const [x2, y2] = cellPoint(1, r / PANEL_ROWS);
+    brush.line(x1, y1, x2, y2);
+  }
+  // Two faint glints across the glass.
+  brush.noStroke();
+  brush.wash("#ffffff", 55);
+  brush.polygon([cellPoint(0.08, 0), cellPoint(0.2, 0), cellPoint(0.02, 1), cellPoint(-0.02, 1)]);
+  brush.polygon([cellPoint(0.26, 0), cellPoint(0.3, 0), cellPoint(0.12, 1), cellPoint(0.08, 1)]);
+  brush.noWash();
+  inkPolygon(cellArea, "#0e1c3a", 1.2);
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  // Science scene, back to front: rings and beads behind the pane, the pane,
+  // its lattice, the laser, then the beads in front.
+  paintRings();
+  paintFanBeads();
+  paintBeadsBehindPane();
+  paintPaneGlass();
+  paintLattice();
+  paintLaser();
+  paintBeadsInFront();
+
+  // Ribbon from the rings down to the solar panel.
+  paintRibbon();
+
+  // Everyday scene.
+  paintSun();
+  paintGround();
+  paintStand();
+  paintPanel();
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>

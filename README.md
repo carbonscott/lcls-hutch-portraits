@@ -1,8 +1,10 @@
 # Portraits of the LCLS Instruments
 
-Nine painted portraits of the instruments at SLAC's
-[Linac Coherent Light Source](https://lcls.slac.stanford.edu/instruments) (LCLS) X-ray laser:
-TMO, TXI, XPP, chemRIXS, qRIXS, XCS, MFX, CXI and MEC.
+Ten painted portraits of the instruments at SLAC's
+[Linac Coherent Light Source](https://lcls.slac.stanford.edu/instruments) (LCLS) user facility.
+Nine use the LCLS X-ray laser: TMO, TXI, XPP, chemRIXS, qRIXS, XCS, MFX, CXI and MEC.
+The tenth, MeV-UED, is an "electron camera" that uses short pulses of fast electrons
+in place of X-ray light.
 
 Each portrait shows what the instrument lets scientists see (top half) and where that
 work shows up in everyday life (bottom half). A ribbon joins the two halves. The

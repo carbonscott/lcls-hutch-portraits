@@ -1,7 +1,7 @@
 /* Colours are taken from the portraits themselves: the warm paper, the
-   dark ink, the violet-to-cyan X-ray streak, the red laser streak and the
-   gold ribbon that joins the science half of each painting to its
-   everyday half. */
+   dark ink, the violet-to-cyan X-ray streak, the red laser streak, the
+   green electron beads (MeV-UED only) and the gold ribbon that joins the
+   science half of each painting to its everyday half. */
 :root {
   --paper: #f1e8d6;
   --paper-light: #f8f2e6;
@@ -12,6 +12,7 @@
   --xray-violet: #4b1d8f;
   --xray-cyan: #2fb8d6;
   --laser-red: #e24a2b;
+  --electron-green: #22b14c;
   --ribbon-gold: #f2c14e;
   --ribbon-gold-dark: #b8791b;
 
@@ -154,6 +155,12 @@ a:hover {
   background: var(--laser-red);
 }
 
+.swatch-electron {
+  height: 10px;
+  margin-top: 9px;
+  background: radial-gradient(circle, var(--electron-green) 0 4px, transparent 4.5px) 0 0 / 11px 10px repeat-x;
+}
+
 .swatch-ribbon {
   background: var(--ribbon-gold);
   border: 1px solid var(--ribbon-gold-dark);
@@ -164,7 +171,7 @@ a:hover {
 
 .index {
   display: grid;
-  grid-template-columns: repeat(9, 1fr);
+  grid-template-columns: repeat(10, minmax(0, 1fr));
   gap: 12px;
   margin: 48px 0 24px;
   padding: 0;
@@ -285,6 +292,11 @@ a:hover {
   border-left-color: var(--xray-violet);
 }
 
+/* MeV-UED probes with electrons, not X-rays. */
+#ued .caption-part.science {
+  border-left-color: var(--electron-green);
+}
+
 .caption-part.everyday {
   border-left-color: var(--ribbon-gold);
 }
@@ -317,7 +329,12 @@ a:hover {
 
 @media (max-width: 860px) {
   .index {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .index a {
+    font-size: 0.72rem;
+    white-space: nowrap;
   }
 
   .legend {
