@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mec: lasers crush a bead into a tiny star, a city lit by fusion power</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// MEC portrait: "A star squeezed into a bead to power a city."
+// Top: vermilion laser beams converge from several sides on a tiny bead that
+//      blazes like a miniature sun, with shock-wave rings around it; a violet
+//      X-ray streak hits it to take its picture. In the corner, a cut-away giant
+//      planet shows its dense glowing core.
+// Bottom: a city skyline with lit windows, fed by a power pylon and cables.
+// Ribbon: a golden band of downward chevrons runs from the blaze to the pylon.
+//
+// Coordinates: origin at the canvas centre, x -450..450, y -600..600, y down.
+
+const SEED = 77021;
+const PAPER = "#f1e8d6";
+
+// Series colour conventions.
+const XRAY_VIOLET = "#4b1d8f";
+const XRAY_CYAN = "#2fb8d6";
+const LASER_VERMILION = "#e34a27";
+
+const INK = "#1c2226";
+const BLAZE_YELLOW = "#ffe36a";
+const BLAZE_GOLD = "#f5b21f";
+const BLAZE_AMBER = "#ee9a1c";
+const SHOCK_BROWN = "#8a4513";
+const RIBBON_GOLD = "#f0b43a";
+const BUILDING_TONES = ["#3b4868", "#4b5b80", "#343f5c"];
+const WINDOW_LIT = "#f7c843";
+const WINDOW_DARK = "#27304a";
+const PYLON_GREY = "#383d45";
+
+// The bead (fuel pellet) and its blaze.
+const BEAD_X = 40;
+const BEAD_Y = -250;
+const BEAD_CORE_RADIUS = 40;
+
+// Cut-away giant planet in the upper-right corner.
+const PLANET_X = 300;
+const PLANET_Y = -452;
+const PLANET_RADIUS = 128;
+
+// Pylon (lattice tower) and city.
+const PYLON_X = -330;
+const PYLON_TOP_Y = 108;
+const CITY_BASELINE = 578;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- small drawing helpers ----------
+
+function washPolygon(points, colour, opacity) {
+  brush.noStroke();
+  brush.noFill();
+  brush.wash(colour, opacity);
+  brush.polygon(points);
+  brush.noWash();
+}
+
+function washCircle(x, y, radius, colour, opacity) {
+  brush.noStroke();
+  brush.noFill();
+  brush.wash(colour, opacity);
+  brush.circle(x, y, radius);
+  brush.noWash();
+}
+
+// Watercolour layer on top of a flat wash: gives texture and a soft painted edge.
+function watercolourPolygon(points, colour, opacity, bleed, texture) {
+  brush.noStroke();
+  brush.noWash();
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, 0.3);
+  brush.polygon(points);
+  brush.noFill();
+}
+
+function watercolourCircle(x, y, radius, colour, opacity, bleed, texture) {
+  brush.noStroke();
+  brush.noWash();
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, 0.3);
+  brush.circle(x, y, radius);
+  brush.noFill();
+}
+
+function inkPolygon(points, colour, weight) {
+  brush.noFill();
+  brush.noWash();
+  brush.set("pen", colour, weight);
+  brush.beginShape(0);
+  for (const [x, y] of points) brush.vertex(x, y);
+  brush.endShape(true);
+}
+
+// Axis-aligned box as a list of corners (x1 < x2, y1 < y2).
+function boxPoints(x1, y1, x2, y2) {
+  return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+}
+
+// A straight bar of the given width between two points, as a 4-corner polygon.
+function barPoints(x1, y1, x2, y2, halfWidth1, halfWidth2) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const normalX = -(y2 - y1) / length;
+  const normalY = (x2 - x1) / length;
+  return [
+    [x1 + normalX * halfWidth1, y1 + normalY * halfWidth1],
+    [x2 + normalX * halfWidth2, y2 + normalY * halfWidth2],
+    [x2 - normalX * halfWidth2, y2 - normalY * halfWidth2],
+    [x1 - normalX * halfWidth1, y1 - normalY * halfWidth1],
+  ];
+}
+
+// Points along a cubic Bezier curve.
+function bezierPoints(p0, p1, p2, p3, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t) * (1 - t);
+    const b = 3 * (1 - t) * (1 - t) * t;
+    const c = 3 * (1 - t) * t * t;
+    const d = t * t * t;
+    points.push([
+      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+    ]);
+  }
+  return points;
+}
+
+// Unit normal of a polyline at index i (from its neighbours).
+function normalAt(points, i) {
+  const previous = points[Math.max(0, i - 1)];
+  const next = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(next[0] - previous[0], next[1] - previous[1]);
+  return [-(next[1] - previous[1]) / length, (next[0] - previous[0]) / length];
+}
+
+// Closed band around a centre line; widthAt(t) gives the width at fraction t
+// (0 at the start of the line, 1 at its end).
+function bandPolygon(centreLine, widthAt) {
+  const leftSide = [];
+  const rightSide = [];
+  for (let i = 0; i < centreLine.length; i++) {
+    const t = i / (centreLine.length - 1);
+    const halfWidth = widthAt(t) / 2;
+    const [normalX, normalY] = normalAt(centreLine, i);
+    const [x, y] = centreLine[i];
+    leftSide.push([x + normalX * halfWidth, y + normalY * halfWidth]);
+    rightSide.push([x - normalX * halfWidth, y - normalY * halfWidth]);
+  }
+  return leftSide.concat(rightSide.reverse());
+}
+
+// A V pointing straight down, centred on (x, y).
+function downChevron(x, y, arm, thickness) {
+  const tipY = y + arm * 0.5;
+  return [
+    [x - arm, tipY - arm], [x, tipY], [x + arm, tipY - arm],
+    [x + arm, tipY - arm - thickness], [x, tipY - thickness * 1.45], [x - arm, tipY - arm - thickness],
+  ];
+}
+
+// ---------- series conventions: X-ray streak and its starburst ----------
+
+// edgeSide (+1 or -1) chooses the side of the cyan edge line; an optional
+// extra colour paints a second edge line on the other side.
+function xrayStreak(x1, y1, x2, y2, edgeSide, extraEdgeColour) {
+  brush.noField();
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const normalX = -(y2 - y1) / length;
+  const normalY = (x2 - x1) / length;
+  washPolygon(barPoints(x1, y1, x2, y2, 2.5, 7), XRAY_VIOLET, 245);
+  brush.set("pen", XRAY_VIOLET, 2.4);
+  brush.line(x1, y1, x2, y2);
+  const edge = 13 * edgeSide;
+  brush.set("pen", XRAY_CYAN, 1.4);
+  brush.line(x1 + normalX * edge, y1 + normalY * edge, x2 + normalX * edge, y2 + normalY * edge);
+  if (extraEdgeColour) {
+    brush.set("pen", extraEdgeColour, 2.2);
+    brush.line(x1 - normalX * edge, y1 - normalY * edge, x2 - normalX * edge, y2 - normalY * edge);
+  }
+}
+
+function starburst(x, y, radius, shortSpikeColour) {
+  washCircle(x, y, radius * 0.33, "#ffd84a", 240);
+  for (let i = 0; i < 16; i++) {
+    const angle = (i / 16) * TWO_PI + 0.1;
+    const isLong = i % 2 === 0;
+    const outer = isLong ? radius : radius * 0.6;
+    brush.set("pen", isLong ? XRAY_CYAN : shortSpikeColour, isLong ? 1.6 : 1.4);
+    brush.line(x + Math.cos(angle) * radius * 0.3, y + Math.sin(angle) * radius * 0.3,
+               x + Math.cos(angle) * outer, y + Math.sin(angle) * outer);
+  }
+}
+
+// ---------- top: lasers, the blazing bead, the X-ray ----------
+
+// A vermilion laser beam: a straight wedge, wide where it enters the canvas and
+// narrow near the bead, ending in an arrowhead that points at the bead, so all
+// the beams read as converging on it.
+function laserBeam(startX, startY, reachRadius) {
+  const towardX = BEAD_X - startX;
+  const towardY = BEAD_Y - startY;
+  const length = Math.hypot(towardX, towardY);
+  const unitX = towardX / length;
+  const unitY = towardY / length;
+  const normalX = -unitY;
+  const normalY = unitX;
+  const arrowLength = 36;
+  const shaftEndX = BEAD_X - unitX * (reachRadius + arrowLength);
+  const shaftEndY = BEAD_Y - unitY * (reachRadius + arrowLength);
+  const tipX = BEAD_X - unitX * reachRadius;
+  const tipY = BEAD_Y - unitY * reachRadius;
+  const shaft = barPoints(startX, startY, shaftEndX, shaftEndY, 24, 8);
+  const arrowHead = [
+    [shaftEndX + normalX * 22, shaftEndY + normalY * 22],
+    [tipX, tipY],
+    [shaftEndX - normalX * 22, shaftEndY - normalY * 22],
+  ];
+  washPolygon(shaft, LASER_VERMILION, 225);
+  watercolourPolygon(shaft, LASER_VERMILION, 185, 0.02, 0.25);
+  washPolygon(arrowHead, LASER_VERMILION, 245);
+  brush.noField();
+  brush.set("pen", LASER_VERMILION, 1.4);
+  brush.line(shaft[0][0], shaft[0][1], shaft[1][0], shaft[1][1]);
+  brush.line(shaft[3][0], shaft[3][1], shaft[2][0], shaft[2][1]);
+  inkPolygon(arrowHead, "#a8321a", 1.2);
+}
+
+// Heat glow around the bead (painted before the lasers so they stay vermilion).
+function paintBeadGlow() {
+  brush.noField();
+  washCircle(BEAD_X, BEAD_Y, 128, "#f7de8a", 110);
+}
+
+function paintBead() {
+  brush.noField();
+  // Flame rays of the blaze, alternately long and short.
+  for (let i = 0; i < 20; i++) {
+    const angle = (i / 20) * TWO_PI + 0.05;
+    const outer = i % 2 === 0 ? 112 : 82;
+    const ray = [
+      [BEAD_X + Math.cos(angle - 0.13) * 44, BEAD_Y + Math.sin(angle - 0.13) * 44],
+      [BEAD_X + Math.cos(angle + 0.04) * (outer * 0.7), BEAD_Y + Math.sin(angle + 0.04) * (outer * 0.7)],
+      [BEAD_X + Math.cos(angle) * outer, BEAD_Y + Math.sin(angle) * outer],
+      [BEAD_X + Math.cos(angle + 0.13) * 44, BEAD_Y + Math.sin(angle + 0.13) * 44],
+    ];
+    washPolygon(ray, i % 2 === 0 ? BLAZE_AMBER : BLAZE_GOLD, 235);
+  }
+  // Blazing corona and white-hot core.
+  washCircle(BEAD_X, BEAD_Y, 62, BLAZE_GOLD, 240);
+  watercolourCircle(BEAD_X, BEAD_Y, 62, BLAZE_AMBER, 180, 0.08, 0.4);
+  washCircle(BEAD_X, BEAD_Y, BEAD_CORE_RADIUS, BLAZE_YELLOW, 250);
+  washCircle(BEAD_X, BEAD_Y, 18, "#fff7d6", 255);
+  // Shock-wave rings rippling out through the bead.
+  brush.set("pen", SHOCK_BROWN, 2.2);
+  brush.noFill();
+  brush.circle(BEAD_X, BEAD_Y, 30, 0.15);
+  brush.set("pen", SHOCK_BROWN, 1.8);
+  brush.circle(BEAD_X, BEAD_Y, 50, 0.12);
+  brush.set("pen", SHOCK_BROWN, 1.3);
+  brush.circle(BEAD_X, BEAD_Y, 70, 0.1);
+}
+
+// ---------- top: cut-away giant planet ----------
+
+// Points of a disc sector from angle a1 to a2 (screen angles, y down).
+function sectorPoints(x, y, radius, a1, a2, steps) {
+  const points = [[x, y]];
+  for (let i = 0; i <= steps; i++) {
+    const angle = a1 + (a2 - a1) * (i / steps);
+    points.push([x + radius * Math.cos(angle), y + radius * Math.sin(angle)]);
+  }
+  return points;
+}
+
+// One horizontal band of the planet between heights top and bottom, leaving out
+// the cut-away lower-left quarter.
+function planetBand(top, bottom) {
+  const rightEdge = [];
+  const leftEdge = [];
+  const steps = 8;
+  for (let i = 0; i <= steps; i++) {
+    const y = top + (bottom - top) * (i / steps);
+    const dy = y - PLANET_Y;
+    const halfChord = Math.sqrt(Math.max(0, PLANET_RADIUS * PLANET_RADIUS - dy * dy));
+    rightEdge.push([PLANET_X + halfChord, y]);
+    leftEdge.push([y > PLANET_Y ? PLANET_X : PLANET_X - halfChord, y]);
+  }
+  return rightEdge.concat(leftEdge.reverse());
+}
+
+function paintPlanet() {
+  brush.noField();
+  // The three intact quarters (the lower-left quarter is cut away).
+  const shell = sectorPoints(PLANET_X, PLANET_Y, PLANET_RADIUS, PI, TWO_PI + HALF_PI, 36);
+  washPolygon(shell, "#e2c394", 240);
+  watercolourPolygon(shell, "#d8b27e", 185, 0.06, 0.4);
+  // Cloud bands.
+  const bands = [[-0.78, -0.6], [-0.38, -0.2], [0.05, 0.22], [0.45, 0.62]];
+  for (const [a, b] of bands) {
+    washPolygon(planetBand(PLANET_Y + a * PLANET_RADIUS, PLANET_Y + b * PLANET_RADIUS), "#a87445", 220);
+  }
+  // Storm spot.
+  washCircle(PLANET_X + 62, PLANET_Y + 30, 16, "#8e5a33", 230);
+  // The cut face: layers from the outside in, ending in a glowing core.
+  washPolygon(sectorPoints(PLANET_X, PLANET_Y, PLANET_RADIUS, HALF_PI, PI, 16), "#c46f2c", 245);
+  washPolygon(sectorPoints(PLANET_X, PLANET_Y, PLANET_RADIUS * 0.7, HALF_PI, PI, 14), "#e59a2e", 245);
+  washPolygon(sectorPoints(PLANET_X, PLANET_Y, PLANET_RADIUS * 0.4, HALF_PI, PI, 12), BLAZE_YELLOW, 250);
+  washPolygon(sectorPoints(PLANET_X, PLANET_Y, PLANET_RADIUS * 0.18, HALF_PI, PI, 8), "#fff7d6", 255);
+  // Ink: outer rim, the two cut edges and the layer boundaries.
+  brush.set("pen", INK, 1.5);
+  brush.arc(PLANET_X, PLANET_Y, PLANET_RADIUS, 0, TWO_PI);
+  brush.line(PLANET_X, PLANET_Y, PLANET_X - PLANET_RADIUS, PLANET_Y);
+  brush.line(PLANET_X, PLANET_Y, PLANET_X, PLANET_Y + PLANET_RADIUS);
+  brush.set("pen", "#6b3a14", 1.2);
+  // brush.arc angles are anticlockwise on screen: the lower-left quarter is PI..1.5 PI.
+  brush.arc(PLANET_X, PLANET_Y, PLANET_RADIUS * 0.7, PI, PI + HALF_PI);
+  brush.arc(PLANET_X, PLANET_Y, PLANET_RADIUS * 0.4, PI, PI + HALF_PI);
+  // A few short rays: the core glows.
+  brush.set("pen", "#d9861a", 1.4);
+  for (let i = 1; i <= 3; i++) {
+    const angle = HALF_PI + i * (HALF_PI / 4);
+    brush.line(PLANET_X + Math.cos(angle) * PLANET_RADIUS * 0.44, PLANET_Y + Math.sin(angle) * PLANET_RADIUS * 0.44,
+               PLANET_X + Math.cos(angle) * PLANET_RADIUS * 0.6, PLANET_Y + Math.sin(angle) * PLANET_RADIUS * 0.6);
+  }
+}
+
+// ---------- the ribbon ----------
+
+// Ribbon: wide at the top, narrowing slowly, then closing to a point
+// over its last fifth, like an arrow.
+const RIBBON_START_WIDTH = 112;
+const RIBBON_BODY_END_WIDTH = 64;
+const RIBBON_TIP_START = 0.8;
+
+function ribbonWidthAt(t) {
+  if (t < RIBBON_TIP_START) {
+    return RIBBON_START_WIDTH + (RIBBON_BODY_END_WIDTH - RIBBON_START_WIDTH) * (t / RIBBON_TIP_START);
+  }
+  const tipFraction = (t - RIBBON_TIP_START) / (1 - RIBBON_TIP_START);
+  return RIBBON_BODY_END_WIDTH * (1 - tipFraction) + 4 * tipFraction;
+}
+
+function paintRibbon() {
+  const centreLine = bezierPoints([BEAD_X, -162], [BEAD_X, 40], [PYLON_X, -20], [PYLON_X, PYLON_TOP_Y - 8], 40);
+  const band = bandPolygon(centreLine, ribbonWidthAt);
+  washPolygon(band, RIBBON_GOLD, 200);
+  watercolourPolygon(band, "#e9a82e", 185, 0.1, 0.45);
+  brush.noField();
+  brush.set("pen", "#a8661a", 1.5);
+  brush.beginShape(0.3);
+  for (const [x, y] of band) brush.vertex(x, y);
+  brush.endShape(true);
+  const chevronPositions = [0.3, 0.5, 0.7];
+  for (const t of chevronPositions) {
+    const index = Math.round(t * (centreLine.length - 1));
+    const [x, y] = centreLine[index];
+    const halfWidth = ribbonWidthAt(t) / 2;
+    washPolygon(downChevron(x, y, halfWidth * 0.55, Math.max(6, halfWidth * 0.22)), "#a8621a", 235);
+  }
+}
+
+// ---------- bottom: pylon, cables and the lit city ----------
+
+// x of the pylon's left (side -1) or right (side +1) leg at height y.
+function pylonLegX(y, side) {
+  const waistY = 300;
+  if (y <= waistY) {
+    const t = (y - 130) / (waistY - 130);
+    return PYLON_X + side * (14 + t * 12);
+  }
+  const t = (y - waistY) / (565 - waistY);
+  return PYLON_X + side * (26 + t * 56);
+}
+
+function paintPylon() {
+  brush.noField();
+  const levels = [130, 178, 243, 300, 370, 455, 565];
+  // Legs.
+  brush.set("pen", PYLON_GREY, 2.4);
+  for (const side of [-1, 1]) {
+    brush.line(PYLON_X, PYLON_TOP_Y, pylonLegX(130, side), 130);
+    for (let i = 0; i < levels.length - 1; i++) {
+      brush.line(pylonLegX(levels[i], side), levels[i], pylonLegX(levels[i + 1], side), levels[i + 1]);
+    }
+  }
+  // Cross bracing and horizontal struts.
+  brush.set("pen", PYLON_GREY, 1.3);
+  for (let i = 0; i < levels.length - 1; i++) {
+    const y1 = levels[i];
+    const y2 = levels[i + 1];
+    brush.line(pylonLegX(y1, -1), y1, pylonLegX(y2, 1), y2);
+    brush.line(pylonLegX(y1, 1), y1, pylonLegX(y2, -1), y2);
+    brush.line(pylonLegX(y1, -1), y1, pylonLegX(y1, 1), y1);
+  }
+  // Two crossarms (triangular trusses) with hanging insulators.
+  const arms = [{ y: 160, reach: 100, rootY: 178 }, { y: 226, reach: 84, rootY: 243 }];
+  brush.set("pen", PYLON_GREY, 2.0);
+  for (const arm of arms) {
+    brush.line(PYLON_X - arm.reach, arm.y, PYLON_X + arm.reach, arm.y);
+    brush.line(PYLON_X - arm.reach, arm.y, pylonLegX(arm.rootY, -1), arm.rootY);
+    brush.line(PYLON_X + arm.reach, arm.y, pylonLegX(arm.rootY, 1), arm.rootY);
+  }
+  for (const arm of arms) {
+    for (const side of [-1, 1]) {
+      const tipX = PYLON_X + side * arm.reach;
+      brush.set("pen", PYLON_GREY, 1.4);
+      brush.line(tipX, arm.y, tipX, arm.y + 16);
+      washCircle(tipX, arm.y + 18, 4, "#6a7079", 240);
+    }
+  }
+}
+
+// Buildings: [left x, right x, roof y].
+const BUILDINGS = [
+  [-165, -78, 372], [-86, -6, 318], [-12, 72, 338], [64, 166, 232], [158, 232, 306],
+  [224, 302, 356], [294, 382, 270], [374, 452, 334],
+];
+
+// Cables run from the pylon's right-hand insulators to the tallest tower.
+function paintCables() {
+  brush.noField();
+  brush.set("pen", "#2a2e35", 1.6);
+  const towerLeft = BUILDINGS[3][0];
+  const cables = [
+    { x1: PYLON_X + 100, y1: 178, x2: towerLeft, y2: 250, sag: 30 },
+    { x1: PYLON_X + 84, y1: 244, x2: towerLeft, y2: 276, sag: 22 },
+  ];
+  for (const cable of cables) {
+    const middleX = (cable.x1 + cable.x2) / 2;
+    const middleY = (cable.y1 + cable.y2) / 2 + cable.sag;
+    brush.spline([[cable.x1, cable.y1], [middleX, middleY], [cable.x2, cable.y2]], 0.6);
+  }
+}
+
+function paintCity() {
+  brush.noField();
+  // Warm city glow behind the skyline.
+  const glow = [];
+  for (let i = 0; i <= 30; i++) {
+    const angle = PI + (i / 30) * PI;
+    glow.push([150 + 330 * Math.cos(angle), CITY_BASELINE + 400 * Math.sin(angle)]);
+  }
+  washPolygon(glow, "#f6d58c", 90);
+
+  // Buildings (flat wash, each overlapping the one before).
+  for (let i = 0; i < BUILDINGS.length; i++) {
+    const [x1, x2, roofY] = BUILDINGS[i];
+    washPolygon(boxPoints(x1, roofY, x2, CITY_BASELINE), BUILDING_TONES[i % 3], 245);
+  }
+  // Spire on the tallest tower.
+  const [towerLeft, towerRight, towerRoof] = BUILDINGS[3];
+  const towerMiddle = (towerLeft + towerRight) / 2;
+  washPolygon([[towerMiddle - 14, towerRoof], [towerMiddle, towerRoof - 58], [towerMiddle + 14, towerRoof]], BUILDING_TONES[0], 245);
+  // One watercolour layer over the whole skyline for texture.
+  const skyline = [[BUILDINGS[0][0], CITY_BASELINE]];
+  for (const [x1, x2, roofY] of BUILDINGS) {
+    skyline.push([x1, roofY], [x2, roofY]);
+  }
+  skyline.push([BUILDINGS[BUILDINGS.length - 1][1], CITY_BASELINE]);
+  watercolourPolygon(skyline, "#3b4868", 185, 0.04, 0.4);
+
+  // Windows: most are lit.
+  for (let i = 0; i < BUILDINGS.length; i++) {
+    const [x1, x2, roofY] = BUILDINGS[i];
+    const columns = Math.floor((x2 - x1 - 12) / 26);
+    const usedWidth = columns * 26 - 10;
+    const startX = x1 + (x2 - x1 - usedWidth) / 2;
+    for (let y = roofY + 18; y + 20 < CITY_BASELINE - 14; y += 34) {
+      for (let c = 0; c < columns; c++) {
+        const lit = random() < 0.78;
+        const windowX = startX + c * 26;
+        washPolygon(boxPoints(windowX, y, windowX + 16, y + 20), lit ? WINDOW_LIT : WINDOW_DARK, 250);
+      }
+    }
+  }
+  // Outlines.
+  for (const [x1, x2, roofY] of BUILDINGS) {
+    inkPolygon(boxPoints(x1, roofY, x2, CITY_BASELINE), "#161b29", 1.3);
+  }
+  brush.set("pen", "#161b29", 1.4);
+  brush.line(-450, CITY_BASELINE, 450, CITY_BASELINE);
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  paintRibbon();
+  paintPlanet();
+
+  // Lasers converge on the bead from four sides (none from below: the ribbon goes there).
+  paintBeadGlow();
+  const laserStarts = [[-450, -592], [BEAD_X, -600], [-450, -118], [450, 40]];
+  for (const [x, y] of laserStarts) laserBeam(x, y, 70);
+  paintBead();
+
+  // The X-ray comes in from the right and ends in a starburst at the blaze.
+  const xrayEndX = BEAD_X + 66;
+  xrayStreak(450, BEAD_Y - 10, xrayEndX, BEAD_Y, 1, null);
+  starburst(xrayEndX, BEAD_Y, 32, XRAY_VIOLET);
+
+  paintCity();
+  paintCables();
+  paintPylon();
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>

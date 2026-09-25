@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>xpp: a film strip of atoms melting</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// XPP portrait.
+// Top (science): a horizontal film strip of four frames with sprocket holes.
+// A vermilion laser flash hits the first frame. A violet X-ray flash lights
+// every frame, like a camera flash. Frame by frame, a neat honeycomb lattice
+// of atoms (ice) loosens, jiggles and scatters into a disordered liquid.
+// Bottom (everyday): a big melting ice cube in its puddle, with one drop of
+// water falling into the puddle.
+// Ribbon: a band of downward chevrons carries the last frame's loose atoms
+// down to the ice cube.
+//
+// Coordinates: canvas centre is the origin, x -450..450, y -600..600, y down.
+
+const SEED = 6303;
+const PAPER = "#f1e8d6";
+
+// Series colour conventions.
+const XRAY_VIOLET = "#4b1d8f";
+const XRAY_CYAN = "#2fb8d6";
+const LASER_VERMILION = "#e34a27";
+
+// Film strip geometry.
+const STRIP_LEFT = -425;
+const STRIP_RIGHT = 425;
+const STRIP_TOP = -420;
+const STRIP_BOTTOM = -150;
+const BAND_HEIGHT = 40;          // perforated band above and below the frames
+const BAR_WIDTH = 12;            // film between two frames
+const FRAME_COUNT = 4;
+const HOLE_WIDTH = 22;
+const HOLE_HEIGHT = 16;
+const HOLE_SPACING = 42;
+const FILM = "#c3945a";
+const FILM_EDGE = "#4a3020";
+
+// Atoms (ice lattice).
+const BOND_LENGTH = 28;
+const ATOM_RADIUS = 8.5;
+const ATOM = "#2f6fb0";
+const ATOM_EDGE = "#12304f";
+
+// Ice cube (everyday scene).
+const CUBE_FRONT_LEFT = -235;
+const CUBE_FRONT_TOP = 255;
+const CUBE_SIZE = 210;
+const CUBE_DEPTH_X = 112;
+const CUBE_DEPTH_Y = -72;
+const PUDDLE_X = -10;
+const PUDDLE_Y = 492;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- small geometry helpers ----------
+
+function ellipsePoints(centreX, centreY, radiusX, radiusY, fromAngle, toAngle, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = fromAngle + (toAngle - fromAngle) * (i / steps);
+    points.push([centreX + radiusX * Math.cos(angle), centreY + radiusY * Math.sin(angle)]);
+  }
+  return points;
+}
+
+function densify(points, maxStep) {
+  const result = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const pieces = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / maxStep));
+    for (let k = 0; k < pieces; k++) {
+      result.push([x1 + (x2 - x1) * (k / pieces), y1 + (y2 - y1) * (k / pieces)]);
+    }
+  }
+  return result;
+}
+
+function bezierPoints(p0, p1, p2, p3, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t) * (1 - t);
+    const b = 3 * (1 - t) * (1 - t) * t;
+    const c = 3 * (1 - t) * t * t;
+    const d = t * t * t;
+    points.push([
+      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+    ]);
+  }
+  return points;
+}
+
+function tangentAt(points, i) {
+  const before = points[Math.max(0, i - 1)];
+  const after = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(after[0] - before[0], after[1] - before[1]) || 1;
+  const tx = (after[0] - before[0]) / length;
+  const ty = (after[1] - before[1]) / length;
+  return { tx, ty, nx: -ty, ny: tx };
+}
+
+function bandPolygon(centreLine, halfWidth) {
+  const left = [];
+  const right = [];
+  for (let i = 0; i < centreLine.length; i++) {
+    const { nx, ny } = tangentAt(centreLine, i);
+    const w = halfWidth(i / (centreLine.length - 1));
+    left.push([centreLine[i][0] + nx * w, centreLine[i][1] + ny * w]);
+    right.push([centreLine[i][0] - nx * w, centreLine[i][1] - ny * w]);
+  }
+  return left.concat(right.reverse());
+}
+
+function setWatercolour(colour, opacity, bleed, texture, border) {
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, border);
+}
+
+function closedOutline(points, curvature) {
+  brush.beginShape(curvature);
+  for (const [x, y] of points) brush.vertex(x, y);
+  brush.endShape(true);
+}
+
+// Rounds the corners of a closed polygon by corner cutting (Chaikin), so the
+// wash and the outline of a shape share exactly the same rounded edge.
+function roundCorners(points, iterations) {
+  let result = points;
+  for (let k = 0; k < iterations; k++) {
+    const next = [];
+    for (let i = 0; i < result.length; i++) {
+      const [x1, y1] = result[i];
+      const [x2, y2] = result[(i + 1) % result.length];
+      next.push([0.75 * x1 + 0.25 * x2, 0.75 * y1 + 0.25 * y2]);
+      next.push([0.25 * x1 + 0.75 * x2, 0.25 * y1 + 0.75 * y2]);
+    }
+    result = next;
+  }
+  return result;
+}
+
+function rectPoints(left, top, width, height) {
+  return [[left, top], [left + width, top], [left + width, top + height], [left, top + height]];
+}
+
+// ---------- series conventions: X-ray and laser ----------
+
+function paintStarburst(x, y, size) {
+  brush.noStroke();
+  brush.wash("#ffd84a", 230);
+  brush.circle(x, y, size * 0.45);
+  brush.noWash();
+  const rays = 14;
+  for (let i = 0; i < rays; i++) {
+    const angle = (i / rays) * TWO_PI + 0.1;
+    const long = i % 2 === 0;
+    const inner = size * 0.35;
+    const outer = long ? size * 1.25 : size * 0.8;
+    brush.set("pen", long ? XRAY_VIOLET : XRAY_CYAN, long ? 1.6 : 1.3);
+    brush.line(x + inner * Math.cos(angle), y + inner * Math.sin(angle),
+               x + outer * Math.cos(angle), y + outer * Math.sin(angle));
+  }
+}
+
+function paintXray(x1, y1, x2, y2, burstSize) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length;
+  const uy = (y2 - y1) / length;
+  const nx = -uy;
+  const ny = ux;
+  brush.noStroke();
+  brush.wash(XRAY_VIOLET, 235);
+  brush.polygon([
+    [x1 + nx * 2, y1 + ny * 2], [x2 + nx * 5, y2 + ny * 5],
+    [x2 - nx * 5, y2 - ny * 5], [x1 - nx * 2, y1 - ny * 2],
+  ]);
+  brush.noWash();
+  brush.set("pen", XRAY_VIOLET, 3);
+  brush.line(x1, y1, x2, y2);
+  brush.set("pen", XRAY_CYAN, 1.3);
+  brush.line(x1 - nx * 11, y1 - ny * 11, x2 - nx * 11 - ux * 14, y2 - ny * 11 - uy * 14);
+  paintStarburst(x2, y2, burstSize);
+}
+
+function paintLaser(x1, y1, x2, y2) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length;
+  const uy = (y2 - y1) / length;
+  const nx = -uy;
+  const ny = ux;
+  brush.noStroke();
+  brush.wash(LASER_VERMILION, 225);
+  brush.polygon([
+    [x1 + nx * 6, y1 + ny * 6], [x2 + nx * 4, y2 + ny * 4],
+    [x2 - nx * 4, y2 - ny * 4], [x1 - nx * 6, y1 - ny * 6],
+  ]);
+  brush.noWash();
+  brush.set("pen", LASER_VERMILION, 2.4);
+  brush.line(x1, y1, x2, y2);
+  // Vermilion flash where it lands.
+  brush.noStroke();
+  brush.wash(LASER_VERMILION, 200);
+  brush.circle(x2, y2, 12);
+  brush.noWash();
+  for (let i = 0; i < 10; i++) {
+    const angle = (i / 10) * TWO_PI + 0.2;
+    brush.set("pen", LASER_VERMILION, 1.6);
+    brush.line(x2 + 16 * Math.cos(angle), y2 + 16 * Math.sin(angle),
+               x2 + 34 * Math.cos(angle), y2 + 34 * Math.sin(angle));
+  }
+}
+
+// ---------- film strip ----------
+
+function frameWidth() {
+  return (STRIP_RIGHT - STRIP_LEFT - (FRAME_COUNT + 1) * BAR_WIDTH) / FRAME_COUNT;
+}
+
+function frameBox(index) {
+  const width = frameWidth();
+  const left = STRIP_LEFT + BAR_WIDTH + index * (width + BAR_WIDTH);
+  const top = STRIP_TOP + BAND_HEIGHT;
+  const bottom = STRIP_BOTTOM - BAND_HEIGHT;
+  return { left, top, right: left + width, bottom, width, height: bottom - top };
+}
+
+// x positions of the sprocket holes (left edges).
+function holeLefts() {
+  const lefts = [];
+  for (let x = STRIP_LEFT + 14; x + HOLE_WIDTH <= STRIP_RIGHT - 10; x += HOLE_SPACING) lefts.push(x);
+  return lefts;
+}
+
+// Paints one perforated band as film-coloured pieces around the holes, so the
+// holes stay paper-coloured.
+function paintPerforatedBand(bandTop) {
+  const holeTop = bandTop + (BAND_HEIGHT - HOLE_HEIGHT) / 2;
+  const holeBottom = holeTop + HOLE_HEIGHT;
+  const width = STRIP_RIGHT - STRIP_LEFT;
+  brush.noStroke();
+  brush.wash(FILM, 225);
+  brush.polygon(rectPoints(STRIP_LEFT, bandTop, width, holeTop - bandTop));
+  brush.polygon(rectPoints(STRIP_LEFT, holeBottom, width, bandTop + BAND_HEIGHT - holeBottom));
+  let x = STRIP_LEFT;
+  for (const left of holeLefts()) {
+    brush.polygon(rectPoints(x, holeTop, left - x, HOLE_HEIGHT));
+    x = left + HOLE_WIDTH;
+  }
+  brush.polygon(rectPoints(x, holeTop, STRIP_RIGHT - x, HOLE_HEIGHT));
+  brush.noWash();
+  brush.set("pen", FILM_EDGE, 1.3);
+  for (const left of holeLefts()) brush.rect(left, holeTop, HOLE_WIDTH, HOLE_HEIGHT);
+}
+
+function paintFilmStrip() {
+  paintPerforatedBand(STRIP_TOP);
+  paintPerforatedBand(STRIP_BOTTOM - BAND_HEIGHT);
+  // Bars between frames.
+  brush.noStroke();
+  brush.wash(FILM, 225);
+  for (let i = 0; i <= FRAME_COUNT; i++) {
+    const left = STRIP_LEFT + i * (frameWidth() + BAR_WIDTH);
+    brush.polygon(rectPoints(left, STRIP_TOP + BAND_HEIGHT, BAR_WIDTH, STRIP_BOTTOM - STRIP_TOP - 2 * BAND_HEIGHT));
+  }
+  brush.noWash();
+  // Frame windows: a pale cool tint, like an exposed picture.
+  for (let i = 0; i < FRAME_COUNT; i++) {
+    const box = frameBox(i);
+    brush.set("pen", FILM_EDGE, 1.4);
+    brush.wash("#dce9ef", 200);
+    brush.polygon(rectPoints(box.left, box.top, box.width, box.height));
+    brush.noWash();
+  }
+  // Strip outline.
+  brush.set("pen", FILM_EDGE, 1.8);
+  brush.rect(STRIP_LEFT, STRIP_TOP, STRIP_RIGHT - STRIP_LEFT, STRIP_BOTTOM - STRIP_TOP);
+}
+
+// ---------- the atoms in each frame ----------
+
+// Honeycomb (ice-like) lattice points and bonds inside a box.
+function honeycomb(box) {
+  const a = BOND_LENGTH;
+  const points = [];
+  const marginX = 16;
+  const top = box.top + 46;
+  const bottom = box.bottom - 14;
+  const columnStep = Math.sqrt(3) * a;
+  const rowStep = 1.5 * a;
+  for (let row = -1; row < 8; row++) {
+    for (let col = -1; col < 8; col++) {
+      const cx = box.left + marginX + col * columnStep + (row % 2 === 0 ? 0 : columnStep / 2);
+      const cy = top + row * rowStep;
+      // Two lattice points per cell give the honeycomb.
+      for (const [x, y] of [[cx, cy], [cx, cy + a]]) {
+        if (x < box.left + marginX - 1 || x > box.right - marginX + 1) continue;
+        if (y < top - 1 || y > bottom + 1) continue;
+        if (!points.some(([px, py]) => Math.hypot(px - x, py - y) < 2)) points.push([x, y]);
+      }
+    }
+  }
+  const bonds = [];
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      const d = Math.hypot(points[i][0] - points[j][0], points[i][1] - points[j][1]);
+      if (Math.abs(d - a) < 2) bonds.push([i, j]);
+    }
+  }
+  return { points, bonds };
+}
+
+function paintAtom(x, y) {
+  brush.set("pen", ATOM_EDGE, 1.3);
+  brush.wash(ATOM, 245);
+  brush.circle(x, y, ATOM_RADIUS);
+  brush.noWash();
+}
+
+// Small curved marks beside an atom to show it is jiggling.
+function paintJiggle(x, y, size) {
+  brush.set("pen", "#4a6f8f", 1.1);
+  const angle = random(TWO_PI);
+  brush.arc(x, y, ATOM_RADIUS + 5, angle, angle + size);
+  brush.arc(x, y, ATOM_RADIUS + 5, angle + PI, angle + PI + size);
+}
+
+function paintFrameAtoms(index) {
+  const box = frameBox(index);
+  const lattice = honeycomb(box);
+  // How far atoms have moved from their lattice sites in this frame.
+  const shake = [0, 4, 10][index];
+  if (index < 3) {
+    const moved = lattice.points.map(([x, y]) => [x + random(-shake, shake), y + random(-shake, shake)]);
+    brush.set("pen", ATOM_EDGE, 2);
+    for (const [i, j] of lattice.bonds) {
+      const d = Math.hypot(moved[i][0] - moved[j][0], moved[i][1] - moved[j][1]);
+      // In the third frame some bonds have already broken.
+      if (index === 2 && (d > BOND_LENGTH * 1.18 || random() < 0.35)) continue;
+      brush.set("pen", ATOM_EDGE, 2);
+      brush.line(moved[i][0], moved[i][1], moved[j][0], moved[j][1]);
+    }
+    for (const [x, y] of moved) {
+      paintAtom(x, y);
+      if (index === 1 && random() < 0.4) paintJiggle(x, y, 0.8);
+      if (index === 2 && random() < 0.7) paintJiggle(x, y, 1.1);
+    }
+  } else {
+    // Last frame: a disordered liquid, the same number of atoms scattered.
+    const placed = [];
+    let tries = 0;
+    while (placed.length < lattice.points.length - 2 && tries < 2000) {
+      tries++;
+      const x = random(box.left + 16, box.right - 16);
+      const y = random(box.top + 44, box.bottom - 6);
+      if (placed.some(([px, py]) => Math.hypot(px - x, py - y) < 24)) continue;
+      placed.push([x, y]);
+    }
+    for (const [x, y] of placed) {
+      paintAtom(x, y);
+      if (random() < 0.8) paintJiggle(x, y, 1.3);
+    }
+  }
+}
+
+// ---------- ribbon ----------
+
+function ribbonCentreLine() {
+  const last = frameBox(FRAME_COUNT - 1);
+  const start = [(last.left + last.right) / 2 + 20, STRIP_BOTTOM + 4];
+  const end = [CUBE_FRONT_LEFT + CUBE_SIZE / 2 + CUBE_DEPTH_X / 2, CUBE_FRONT_TOP + CUBE_DEPTH_Y / 2 - 20];
+  return bezierPoints(start, [start[0], start[1] + 170], [end[0] + 60, end[1] - 170], end, 40);
+}
+
+function ribbonHalfWidth(t) {
+  return 74 - 44 * t;
+}
+
+function paintRibbon() {
+  const centre = ribbonCentreLine();
+  const band = bandPolygon(centre, ribbonHalfWidth);
+  // A flat wash first keeps the band even; the watercolour layer adds texture.
+  brush.noStroke();
+  brush.wash("#a9d2e4", 170);
+  brush.polygon(band);
+  brush.noWash();
+  setWatercolour("#86bcd8", 200, 0.1, 0.3, 0.2);
+  brush.polygon(band);
+  brush.noFill();
+  // Downward chevrons.
+  brush.set("pen", "#1f5273", 2.3);
+  for (let k = 1; k <= 5; k++) {
+    const i = Math.round(k * 6.4);
+    const { tx, ty, nx, ny } = tangentAt(centre, i);
+    const w = ribbonHalfWidth(i / (centre.length - 1)) * 0.6;
+    const [px, py] = centre[i];
+    brush.line(px + nx * w - tx * 14, py + ny * w - ty * 14, px + tx * 10, py + ty * 10);
+    brush.line(px - nx * w - tx * 14, py - ny * w - ty * 14, px + tx * 10, py + ty * 10);
+  }
+  // Loose atoms spilling out of the last frame and down the band.
+  const spilled = [[0.0, -30], [0.04, 26], [0.12, -8], [0.24, 34], [0.36, -30], [0.52, 20]];
+  for (const [t, offset] of spilled) {
+    const i = Math.round(t * (centre.length - 1));
+    const { nx, ny } = tangentAt(centre, i);
+    paintAtom(centre[i][0] + nx * offset, centre[i][1] + ny * offset + (t === 0 ? -6 : 0));
+  }
+}
+
+// ---------- everyday scene: the melting ice cube ----------
+
+function cubeCorners() {
+  const l = CUBE_FRONT_LEFT;
+  const t = CUBE_FRONT_TOP;
+  const s = CUBE_SIZE;
+  const dx = CUBE_DEPTH_X;
+  const dy = CUBE_DEPTH_Y;
+  return {
+    frontTopLeft: [l, t], frontTopRight: [l + s, t],
+    frontBottomRight: [l + s, t + s], frontBottomLeft: [l, t + s],
+    backTopLeft: [l + dx, t + dy], backTopRight: [l + s + dx, t + dy],
+    backBottomRight: [l + s + dx, t + s + dy],
+  };
+}
+
+// Sagging, melted bottom edge between two points (bulges downward).
+function meltedEdge(from, to, sag, waves) {
+  const points = [];
+  for (let i = 0; i <= 12; i++) {
+    const t = i / 12;
+    const x = from[0] + (to[0] - from[0]) * t;
+    const y = from[1] + (to[1] - from[1]) * t + sag * Math.sin(PI * t) + 5 * Math.sin(t * waves * PI);
+    points.push([x, y]);
+  }
+  return points;
+}
+
+function paintPuddle() {
+  brush.set("pen", "#2a6d8c", 1.5);
+  setWatercolour("#8fc3d8", 190, 0.08, 0.3, 0.2);
+  brush.polygon(ellipsePoints(PUDDLE_X, PUDDLE_Y, 350, 62, 0, TWO_PI, 48).slice(0, 48));
+  brush.noFill();
+}
+
+function paintIceCube() {
+  const c = cubeCorners();
+  const frontBottom = meltedEdge(c.frontBottomRight, c.frontBottomLeft, 24, 3);
+  const sideBottom = meltedEdge(c.backBottomRight, c.frontBottomRight, 14, 2);
+  const front = [c.frontTopLeft, c.frontTopRight].concat(frontBottom);
+  const side = [c.frontTopRight, c.backTopRight].concat(sideBottom);
+  const top = [c.frontTopLeft, c.frontTopRight, c.backTopRight, c.backTopLeft];
+
+  // Each face: a flat icy wash, then a textured watercolour layer and outline.
+  const faces = [
+    { points: front, wash: "#8ec2dc", fill: "#5f9ec4" },
+    { points: side, wash: "#5d9cc2", fill: "#3a78a2" },
+    { points: top, wash: "#c2e1ef", fill: "#8cc0da" },
+  ];
+  for (const face of faces) {
+    const rounded = roundCorners(densify(face.points, 60), 3);
+    brush.noStroke();
+    brush.wash(face.wash, 215);
+    brush.polygon(rounded);
+    brush.noWash();
+    brush.set("pen", "#173f5a", 1.9);
+    setWatercolour(face.fill, 120, 0.05, 0.4, 0.3);
+    brush.polygon(rounded);
+    brush.noFill();
+  }
+
+  // Frosty highlight strokes on the faces.
+  brush.set("pen", "#2f6a90", 1.6);
+  brush.line(c.frontTopLeft[0] + 24, c.frontTopLeft[1] + 30, c.frontTopLeft[0] + 24, c.frontTopLeft[1] + 110);
+  brush.line(c.frontTopLeft[0] + 40, c.frontTopLeft[1] + 24, c.frontTopLeft[0] + 90, c.frontTopLeft[1] + 24);
+  brush.line(c.backTopLeft[0] + 10, c.backTopLeft[1] + 16, c.backTopLeft[0] + 80, c.backTopLeft[1] + 16);
+
+  // Tiny air bubbles trapped in the ice.
+  const bubbles = [[-120, 330, 6], [-95, 362, 4.5], [-140, 385, 5], [-70, 318, 4], [-10, 330, 5]];
+  brush.set("pen", "#1f4f6e", 1.2);
+  for (const [x, y, r] of bubbles) brush.circle(x, y, r);
+}
+
+function paintFallingDrop() {
+  const x = 150;
+  const y = 400;
+  const tip = [x, y - 48];
+  const round = ellipsePoints(x, y, 24, 26, -0.55, PI + 0.55, 24);
+  brush.set("pen", "#1f4f6e", 1.8);
+  setWatercolour("#3f86b8", 235, 0.05, 0.3, 0.2);
+  brush.polygon([tip].concat(round.reverse()));
+  brush.noFill();
+  // Motion marks above the drop, and ripples where it will land.
+  brush.set("pen", "#2a6d8c", 1.4);
+  brush.line(x - 18, y - 84, x - 16, y - 66);
+  brush.line(x, y - 104, x, y - 70);
+  brush.line(x + 18, y - 88, x + 16, y - 66);
+  brush.set("pen", "#1f5b78", 1.6);
+  brush.spline(ellipsePoints(x + 10, PUDDLE_Y + 8, 34, 9, 0, TWO_PI, 20), 0.5);
+  brush.spline(ellipsePoints(x + 10, PUDDLE_Y + 8, 66, 17, 0, TWO_PI, 28), 0.5);
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  // Science scene: the film strip and its frames.
+  paintFilmStrip();
+  for (let i = 0; i < FRAME_COUNT; i++) paintFrameAtoms(i);
+
+  // Laser flash into the first frame; an X-ray flash lights every frame.
+  const first = frameBox(0);
+  paintLaser(-450, -575, first.left + 44, first.top + 24);
+  for (let i = 0; i < FRAME_COUNT; i++) {
+    const box = frameBox(i);
+    const hitX = box.left + box.width * 0.62;
+    const hitY = box.top + 22;
+    paintXray(hitX + 70, -598, hitX, hitY, 26);
+  }
+
+  // Everyday scene.
+  paintPuddle();
+  paintIceCube();
+  paintFallingDrop();
+
+  // Ribbon from the last frame down to the ice cube.
+  paintRibbon();
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>

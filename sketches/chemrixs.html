@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>chemrixs: sunlight into fuel, in a drop of liquid</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// chemRIXS portrait.
+// Top (science): one big, magnified falling drop of liquid. In the drop floats one metal-centred catalyst molecule (a
+// central metal atom with four ligand arms). Coloured electron-orbital lobes
+// sit around the metal, where a violet X-ray streak and a vermilion laser
+// streak meet it. Beside the drop, a small ladder of energy levels shows an
+// electron lifted from a low level to a high one.
+// Bottom (everyday): the stream pours into a glass flask; a big sun shines on
+// it; golden bubbles of fuel rise out of the flask and drift to a small house
+// with warmly lit windows.
+// Ribbon: the falling stream itself, a tapering band with downward chevrons.
+//
+// Coordinates: canvas centre is the origin, x -450..450, y -600..600, y down.
+
+const SEED = 5202;
+const PAPER = "#f1e8d6";
+
+// Series colour conventions.
+const XRAY_VIOLET = "#4b1d8f";
+const XRAY_CYAN = "#2fb8d6";
+const LASER_VERMILION = "#e34a27";
+
+// The magnified drop and the molecule in it.
+const DROP_X = -40;
+const DROP_Y = -310;
+const DROP_RADIUS = 186;
+const DROP_TIP_DISTANCE = 1.45 * DROP_RADIUS; // centre to the pointed top of the drop
+const MOLECULE_TILT = 0.45; // radians; arm directions are MOLECULE_TILT + k * HALF_PI
+
+// Liquid colours shared by jet, drop, stream and flask.
+const LIQUID = "#8cc6de";
+const LIQUID_EDGE = "#2a6d8c";
+
+// Flask (Erlenmeyer), in canvas coordinates.
+const FLASK_NECK_X = -90;
+const FLASK_MOUTH_Y = 232;
+const FLASK_NECK_HALF = 48;
+const FLASK_SHOULDER_Y = 318;
+const FLASK_BASE_Y = 560;
+const FLASK_BASE_HALF = 180;
+const FLASK_LIQUID_Y = 405;
+
+// Sun and house.
+const SUN_X = -335;
+const SUN_Y = 125;
+const SUN_RADIUS = 70;
+const HOUSE_LEFT = 232;
+const HOUSE_RIGHT = 420;
+const HOUSE_WALL_TOP = 300;
+const HOUSE_GROUND = 480;
+const HOUSE_PEAK_Y = 200;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- small geometry helpers ----------
+
+function ellipsePoints(centreX, centreY, radiusX, radiusY, fromAngle, toAngle, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = fromAngle + (toAngle - fromAngle) * (i / steps);
+    points.push([centreX + radiusX * Math.cos(angle), centreY + radiusY * Math.sin(angle)]);
+  }
+  return points;
+}
+
+function densify(points, maxStep) {
+  const result = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const pieces = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / maxStep));
+    for (let k = 0; k < pieces; k++) {
+      result.push([x1 + (x2 - x1) * (k / pieces), y1 + (y2 - y1) * (k / pieces)]);
+    }
+  }
+  return result;
+}
+
+function bezierPoints(p0, p1, p2, p3, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t) * (1 - t);
+    const b = 3 * (1 - t) * (1 - t) * t;
+    const c = 3 * (1 - t) * t * t;
+    const d = t * t * t;
+    points.push([
+      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+    ]);
+  }
+  return points;
+}
+
+function tangentAt(points, i) {
+  const before = points[Math.max(0, i - 1)];
+  const after = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(after[0] - before[0], after[1] - before[1]) || 1;
+  const tx = (after[0] - before[0]) / length;
+  const ty = (after[1] - before[1]) / length;
+  return { tx, ty, nx: -ty, ny: tx };
+}
+
+function bandPolygon(centreLine, halfWidth) {
+  const left = [];
+  const right = [];
+  for (let i = 0; i < centreLine.length; i++) {
+    const { nx, ny } = tangentAt(centreLine, i);
+    const w = halfWidth(i / (centreLine.length - 1));
+    left.push([centreLine[i][0] + nx * w, centreLine[i][1] + ny * w]);
+    right.push([centreLine[i][0] - nx * w, centreLine[i][1] - ny * w]);
+  }
+  return { left, right, polygon: left.concat(right.slice().reverse()) };
+}
+
+function setWatercolour(colour, opacity, bleed, texture, border) {
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, border);
+}
+
+function closedOutline(points, curvature) {
+  brush.beginShape(curvature);
+  for (const [x, y] of points) brush.vertex(x, y);
+  brush.endShape(true);
+}
+
+// Point at `distance` from the drop centre in direction `angle` (screen radians, y down).
+function fromCentre(angle, distance) {
+  return [DROP_X + distance * Math.cos(angle), DROP_Y + distance * Math.sin(angle)];
+}
+
+// ---------- series conventions: X-ray and laser ----------
+
+function paintStarburst(x, y, size) {
+  brush.noStroke();
+  brush.wash("#ffd84a", 230);
+  brush.circle(x, y, size * 0.45);
+  brush.noWash();
+  const rays = 14;
+  for (let i = 0; i < rays; i++) {
+    const angle = (i / rays) * TWO_PI + 0.1;
+    const long = i % 2 === 0;
+    const inner = size * 0.35;
+    const outer = long ? size * 1.25 : size * 0.8;
+    brush.set("pen", long ? XRAY_VIOLET : XRAY_CYAN, long ? 1.6 : 1.3);
+    brush.line(x + inner * Math.cos(angle), y + inner * Math.sin(angle),
+               x + outer * Math.cos(angle), y + outer * Math.sin(angle));
+  }
+}
+
+function paintXray(x1, y1, x2, y2) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length;
+  const uy = (y2 - y1) / length;
+  const nx = -uy;
+  const ny = ux;
+  brush.noStroke();
+  brush.wash(XRAY_VIOLET, 235);
+  brush.polygon([
+    [x1 + nx * 2, y1 + ny * 2], [x2 + nx * 5, y2 + ny * 5],
+    [x2 - nx * 5, y2 - ny * 5], [x1 - nx * 2, y1 - ny * 2],
+  ]);
+  brush.noWash();
+  brush.set("pen", XRAY_VIOLET, 3);
+  brush.line(x1, y1, x2, y2);
+  brush.set("pen", XRAY_CYAN, 1.3);
+  brush.line(x1 - nx * 11, y1 - ny * 11, x2 - nx * 11 - ux * 14, y2 - ny * 11 - uy * 14);
+  paintStarburst(x2, y2, 34);
+}
+
+// Optical laser streak: vermilion band with a small vermilion flash at the end.
+function paintLaser(x1, y1, x2, y2) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length;
+  const uy = (y2 - y1) / length;
+  const nx = -uy;
+  const ny = ux;
+  brush.noStroke();
+  brush.wash(LASER_VERMILION, 220);
+  brush.polygon([
+    [x1 + nx * 5, y1 + ny * 5], [x2 + nx * 3, y2 + ny * 3],
+    [x2 - nx * 3, y2 - ny * 3], [x1 - nx * 5, y1 - ny * 5],
+  ]);
+  brush.noWash();
+  brush.set("pen", LASER_VERMILION, 2.2);
+  brush.line(x1, y1, x2, y2);
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * TWO_PI + 0.3;
+    brush.set("pen", LASER_VERMILION, 1.4);
+    brush.line(x2 + 10 * Math.cos(angle), y2 + 10 * Math.sin(angle),
+               x2 + 24 * Math.cos(angle), y2 + 24 * Math.sin(angle));
+  }
+}
+
+// ---------- science scene ----------
+
+// Teardrop outline: the pointed top, then the round bottom.
+function dropOutline() {
+  const touch = Math.acos(DROP_RADIUS / DROP_TIP_DISTANCE);
+  const tip = [DROP_X, DROP_Y - DROP_TIP_DISTANCE];
+  const arc = ellipsePoints(DROP_X, DROP_Y, DROP_RADIUS, DROP_RADIUS, -HALF_PI + touch, 3 * HALF_PI - touch, 48);
+  return densify([tip].concat(arc), 24);
+}
+
+function paintDrop() {
+  brush.set("pen", LIQUID_EDGE, 1.7);
+  setWatercolour(LIQUID, 180, 0.06, 0.35, 0.25);
+  brush.polygon(dropOutline());
+  brush.noFill();
+  // Curved sheen inside the rim, as on a glassy drop of liquid.
+  brush.set("pen", "#4f8fb0", 1.5);
+  brush.arc(DROP_X, DROP_Y, DROP_RADIUS - 18, radians(195), radians(240));
+  brush.arc(DROP_X, DROP_Y, DROP_RADIUS - 18, radians(15), radians(55));
+  // A couple of small splashes beside it.
+  brush.set("pen", LIQUID_EDGE, 1.3);
+  brush.wash(LIQUID, 200);
+  brush.circle(DROP_X - DROP_RADIUS - 26, DROP_Y + 90, 9);
+  brush.circle(DROP_X + DROP_RADIUS + 22, DROP_Y + 120, 7);
+  brush.noWash();
+}
+
+// One orbital lobe: an elongated balloon pointing away from the metal.
+function lobePoints(angle, length, halfWidth) {
+  const points = [];
+  const [cx, cy] = fromCentre(angle, length * 0.56);
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  for (let i = 0; i < 36; i++) {
+    const a = (i / 36) * TWO_PI;
+    const along = length * 0.46 * Math.cos(a);
+    const across = halfWidth * Math.sin(a) * (0.75 + 0.25 * Math.cos(a));
+    points.push([cx + along * c - across * s, cy + along * s + across * c]);
+  }
+  return points;
+}
+
+function paintOrbitals() {
+  const colours = ["#e9a91c", "#1f9e93"];
+  for (let k = 0; k < 4; k++) {
+    const angle = MOLECULE_TILT + QUARTER_PI + k * HALF_PI;
+    const colour = colours[k % 2];
+    brush.set("pen", k % 2 === 0 ? "#8a5a06" : "#0f5a54", 1.3);
+    setWatercolour(colour, 200, 0.12, 0.3, 0.2);
+    brush.polygon(lobePoints(angle, 118, 34));
+    brush.noFill();
+  }
+}
+
+function paintMolecule() {
+  const nitrogen = [];
+  const carbon = [];
+  for (let k = 0; k < 4; k++) {
+    const angle = MOLECULE_TILT + k * HALF_PI;
+    nitrogen.push(fromCentre(angle, 100));
+    carbon.push([fromCentre(angle - 0.2, 152), fromCentre(angle + 0.2, 152)]);
+  }
+  // Sticks first.
+  brush.set("pen", "#2b2622", 4.2);
+  for (let k = 0; k < 4; k++) {
+    const [sx, sy] = fromCentre(MOLECULE_TILT + k * HALF_PI, 40);
+    brush.line(sx, sy, nitrogen[k][0], nitrogen[k][1]);
+    for (const [cx, cy] of carbon[k]) brush.line(nitrogen[k][0], nitrogen[k][1], cx, cy);
+  }
+  // Ligand atoms.
+  brush.set("pen", "#141414", 1.3);
+  brush.wash("#4a4f58", 235);
+  for (let k = 0; k < 4; k++) {
+    for (const [cx, cy] of carbon[k]) brush.circle(cx, cy, 14);
+  }
+  brush.noWash();
+  setWatercolour("#2458b0", 235, 0.05, 0.3, 0.2);
+  for (const [nx, ny] of nitrogen) brush.circle(nx, ny, 21);
+  // Central metal atom.
+  brush.noStroke();
+  brush.wash("#8e5a2e", 210);
+  brush.circle(DROP_X, DROP_Y, 45);
+  brush.noWash();
+  brush.set("pen", "#2e1a0c", 1.6);
+  setWatercolour("#7a4a22", 200, 0.06, 0.35, 0.25);
+  brush.circle(DROP_X, DROP_Y, 46);
+  brush.noFill();
+  brush.noStroke();
+  brush.wash("#4d2e14", 120);
+  brush.polygon(ellipsePoints(DROP_X + 10, DROP_Y + 12, 30, 26, 0, TWO_PI, 24).slice(0, 24));
+  brush.noWash();
+}
+
+// Energy ladder: two rails and four rungs (energy levels); an electron is
+// lifted from the lowest rung to the highest one (straight gold arrow).
+function paintEnergyLadder() {
+  const left = 250;
+  const right = 340;
+  const rungs = [-420, -468, -508, -540];
+  brush.set("pen", "#1d2733", 2.4);
+  brush.line(left, rungs[0] + 24, left, rungs[3] - 24);
+  brush.line(right, rungs[0] + 24, right, rungs[3] - 24);
+  brush.set("pen", "#1d2733", 2.8);
+  for (const y of rungs) brush.line(left, y, right, y);
+  // Electron left on the lowest rung (blue) and the lifted electron (gold, glowing).
+  brush.set("pen", "#141414", 1.2);
+  brush.wash("#2458b0", 250);
+  brush.circle(282, rungs[0] - 12, 10);
+  brush.noWash();
+  brush.noStroke();
+  brush.wash("#ffe07a", 200);
+  brush.circle(308, rungs[3] - 13, 20);
+  brush.noWash();
+  brush.set("pen", "#8a5a06", 1.4);
+  brush.wash("#f0b429", 255);
+  brush.circle(308, rungs[3] - 13, 11);
+  brush.noWash();
+  // Straight arrow for the jump, just outside the right rail.
+  const arrowX = right + 26;
+  brush.set("pen", "#b07a0c", 3.2);
+  brush.line(arrowX, rungs[0] - 4, arrowX, rungs[3] + 2);
+  brush.line(arrowX, rungs[3] - 6, arrowX - 12, rungs[3] + 14);
+  brush.line(arrowX, rungs[3] - 6, arrowX + 12, rungs[3] + 14);
+  // Dotted link from the drop to the ladder.
+  brush.set("pen", "#5f7f96", 1.2);
+  const [ex, ey] = fromCentre(-0.45, DROP_RADIUS + 12);
+  const [lx, ly] = [left - 16, rungs[0] + 10];
+  for (let k = 0; k < 6; k++) {
+    const t0 = k / 6;
+    const t1 = t0 + 0.08;
+    brush.line(ex + (lx - ex) * t0, ey + (ly - ey) * t0, ex + (lx - ex) * t1, ey + (ly - ey) * t1);
+  }
+}
+
+// ---------- ribbon: the falling stream ----------
+
+function streamCentreLine() {
+  return bezierPoints([DROP_X, DROP_Y + DROP_RADIUS], [DROP_X, 20], [FLASK_NECK_X - 12, 110],
+                      [FLASK_NECK_X - 12, FLASK_LIQUID_Y - 20], 40);
+}
+
+function streamHalfWidth(t) {
+  return 58 - 40 * t;
+}
+
+function paintStream() {
+  const centre = streamCentreLine();
+  const band = bandPolygon(centre, streamHalfWidth);
+  // The top of the stream follows the round bottom of the drop, so the two join.
+  const w = streamHalfWidth(0);
+  const joinDepth = Math.sqrt(DROP_RADIUS * DROP_RADIUS - w * w);
+  const left = band.left.slice();
+  const right = band.right.slice();
+  left[0] = [DROP_X - w, DROP_Y + joinDepth];
+  right[0] = [DROP_X + w, DROP_Y + joinDepth];
+  const joinAngle = Math.acos(w / DROP_RADIUS);
+  const join = ellipsePoints(DROP_X, DROP_Y, DROP_RADIUS, DROP_RADIUS, joinAngle, PI - joinAngle, 10).slice(1, -1);
+  const stream = left.concat(right.slice().reverse()).concat(join);
+  brush.noStroke();
+  setWatercolour("#6fb3d2", 215, 0.06, 0.3, 0.2);
+  brush.polygon(stream);
+  brush.noFill();
+  // Soft flow lines along the stream instead of hard edges.
+  brush.set("pen", "#4f8fb0", 1.2);
+  brush.spline(band.left.map(([x, y], i) => [x + 5 * Math.sin(i * 0.5), y]).slice(2, -4), 0.5);
+  brush.spline(band.right.map(([x, y], i) => [x + 5 * Math.sin(i * 0.5 + 1), y]).slice(2, -4), 0.5);
+  // Downward chevrons.
+  brush.set("pen", "#1f5b78", 2);
+  for (let k = 1; k <= 5; k++) {
+    const i = Math.round(k * 5.4);
+    const { tx, ty, nx, ny } = tangentAt(centre, i);
+    const w = streamHalfWidth(i / (centre.length - 1)) * 0.6;
+    const [px, py] = centre[i];
+    brush.line(px + nx * w - tx * 12, py + ny * w - ty * 12, px + tx * 10, py + ty * 10);
+    brush.line(px - nx * w - tx * 12, py - ny * w - ty * 12, px + tx * 10, py + ty * 10);
+  }
+}
+
+// ---------- everyday scene ----------
+
+function paintSun() {
+  brush.set("pen", "#b8791a", 1.4);
+  setWatercolour("#f6b93b", 240, 0.12, 0.35, 0.2);
+  brush.circle(SUN_X, SUN_Y, SUN_RADIUS);
+  brush.noFill();
+  for (let i = 0; i < 16; i++) {
+    const angle = (i / 16) * TWO_PI + 0.1;
+    // Rays facing the flask (down and to the right) are longer.
+    const towardFlask = Math.cos(angle - 0.45) > 0.6;
+    brush.set("pen", "#e39a1c", towardFlask ? 2.8 : 2.2);
+    const outer = towardFlask ? 145 : 106;
+    brush.line(SUN_X + 84 * Math.cos(angle), SUN_Y + 84 * Math.sin(angle),
+               SUN_X + outer * Math.cos(angle), SUN_Y + outer * Math.sin(angle));
+  }
+}
+
+function flaskOutline() {
+  const n = FLASK_NECK_X;
+  return [
+    [n - FLASK_NECK_HALF - 8, FLASK_MOUTH_Y - 6], [n - FLASK_NECK_HALF, FLASK_MOUTH_Y + 4],
+    [n - FLASK_NECK_HALF, FLASK_SHOULDER_Y],
+    [n - FLASK_BASE_HALF, FLASK_BASE_Y - 22], [n - FLASK_BASE_HALF + 10, FLASK_BASE_Y],
+    [n + FLASK_BASE_HALF - 10, FLASK_BASE_Y], [n + FLASK_BASE_HALF, FLASK_BASE_Y - 22],
+    [n + FLASK_NECK_HALF, FLASK_SHOULDER_Y],
+    [n + FLASK_NECK_HALF, FLASK_MOUTH_Y + 4], [n + FLASK_NECK_HALF + 8, FLASK_MOUTH_Y - 6],
+  ];
+}
+
+// Half width of the flask body at height y (below the shoulder).
+function flaskHalfWidthAt(y) {
+  const t = (y - FLASK_SHOULDER_Y) / (FLASK_BASE_Y - 22 - FLASK_SHOULDER_Y);
+  return FLASK_NECK_HALF + (FLASK_BASE_HALF - FLASK_NECK_HALF) * Math.min(1, Math.max(0, t));
+}
+
+function paintFlaskGlassAndLiquid() {
+  // Faint glass tint over the whole flask.
+  brush.noStroke();
+  brush.wash("#c7dde3", 110);
+  brush.polygon(densify(flaskOutline(), 30));
+  brush.noWash();
+  // Liquid inside, below the liquid line.
+  const n = FLASK_NECK_X;
+  const w = flaskHalfWidthAt(FLASK_LIQUID_Y);
+  const liquid = [
+    [n - w + 3, FLASK_LIQUID_Y], [n + w - 3, FLASK_LIQUID_Y],
+    [n + FLASK_BASE_HALF - 4, FLASK_BASE_Y - 22], [n + FLASK_BASE_HALF - 14, FLASK_BASE_Y - 4],
+    [n - FLASK_BASE_HALF + 14, FLASK_BASE_Y - 4], [n - FLASK_BASE_HALF + 4, FLASK_BASE_Y - 22],
+  ];
+  setWatercolour("#5fa9cb", 215, 0.04, 0.35, 0.2);
+  brush.polygon(densify(liquid, 30));
+  brush.noFill();
+}
+
+function paintFlaskOutline() {
+  brush.set("pen", "#1d3340", 2);
+  brush.spline(flaskOutline(), 0.12);
+  brush.line(FLASK_NECK_X - FLASK_NECK_HALF - 8, FLASK_MOUTH_Y - 6, FLASK_NECK_X + FLASK_NECK_HALF + 8, FLASK_MOUTH_Y - 6);
+  // Liquid line and glass glints.
+  const w = flaskHalfWidthAt(FLASK_LIQUID_Y);
+  brush.set("pen", "#1f5b78", 1.6);
+  brush.line(FLASK_NECK_X - w + 4, FLASK_LIQUID_Y, FLASK_NECK_X + w - 4, FLASK_LIQUID_Y);
+  brush.set("pen", "#6f93a3", 1.5);
+  brush.line(FLASK_NECK_X + 100, 470, FLASK_NECK_X + 130, 530);
+  brush.line(FLASK_NECK_X + 28, FLASK_MOUTH_Y + 20, FLASK_NECK_X + 28, FLASK_SHOULDER_Y);
+}
+
+function paintFuelBubble(x, y, r) {
+  brush.set("pen", "#8a5a06", 1.7);
+  brush.wash("#f4cf5a", 190);
+  brush.circle(x, y, r);
+  brush.noWash();
+  brush.set("pen", "#8a5a06", 1.1);
+  brush.arc(x, y, r * 0.6, radians(100), radians(165));
+}
+
+function paintFuelBubbles() {
+  // Small bubbles inside the liquid, then bigger ones leaving the mouth.
+  const inside = [[-40, 520, 7], [-10, 470, 8], [-55, 440, 7], [-62, 360, 8], [-58, 290, 9]];
+  for (const [x, y, r] of inside) paintFuelBubble(x, y, r);
+  const outside = [[-50, 205, 11], [-10, 170, 13], [45, 150, 15], [105, 150, 17], [162, 168, 19], [212, 200, 20]];
+  for (const [x, y, r] of outside) paintFuelBubble(x, y, r);
+}
+
+function paintHouse() {
+  // Ground under the house.
+  brush.noStroke();
+  brush.wash("#9dbf6e", 190);
+  const hillTop = bezierPoints([150, 600], [170, HOUSE_GROUND + 10], [300, HOUSE_GROUND - 6], [450, HOUSE_GROUND - 12], 24);
+  brush.polygon(hillTop.concat([[450, 600]]));
+  brush.noWash();
+
+  const walls = [[HOUSE_LEFT, HOUSE_WALL_TOP], [HOUSE_RIGHT, HOUSE_WALL_TOP],
+                 [HOUSE_RIGHT, HOUSE_GROUND], [HOUSE_LEFT, HOUSE_GROUND]];
+  const roof = [[HOUSE_LEFT - 22, HOUSE_WALL_TOP + 6], [(HOUSE_LEFT + HOUSE_RIGHT) / 2, HOUSE_PEAK_Y],
+                [HOUSE_RIGHT + 22, HOUSE_WALL_TOP + 6]];
+  brush.set("pen", "#1d2733", 1.8);
+  setWatercolour("#6f86a6", 225, 0.06, 0.35, 0.25);
+  brush.polygon(densify(walls, 30));
+  setWatercolour("#6b3a2a", 235, 0.06, 0.35, 0.25);
+  brush.polygon(densify(roof, 30));
+  brush.noFill();
+
+  // Warmly lit windows with crossbars, and a door.
+  const windows = [[250, 330], [355, 330]];
+  for (const [x, y] of windows) {
+    brush.set("pen", "#1d2733", 1.6);
+    brush.wash("#ffd23f", 255);
+    brush.rect(x, y, 48, 46);
+    brush.noWash();
+    brush.set("pen", "#1d2733", 1.3);
+    brush.line(x + 24, y, x + 24, y + 46);
+    brush.line(x, y + 23, x + 48, y + 23);
+  }
+  brush.set("pen", "#1d2733", 1.6);
+  brush.wash("#3f2a1c", 230);
+  brush.rect(305, 400, 40, 80);
+  brush.noWash();
+  brush.noStroke();
+  brush.wash("#ffd23f", 255);
+  brush.circle(336, 442, 4);
+  brush.noWash();
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  // Everyday scene.
+  paintSun();
+  paintHouse();
+  paintFlaskGlassAndLiquid();
+
+  // Science scene.
+  paintDrop();
+  paintOrbitals();
+  paintMolecule();
+  // Both beams arrive through gaps between the ligand arms and the lobes.
+  // (Arms point along MOLECULE_TILT + k * HALF_PI, lobes half way between them.)
+  const xrayAngle = MOLECULE_TILT + PI + QUARTER_PI / 2;   // from the upper left
+  const laserAngle = MOLECULE_TILT - QUARTER_PI / 2;       // from the right
+  const [xrayHitX, xrayHitY] = fromCentre(xrayAngle, 50);
+  const xrayDistanceToTop = (xrayHitY + 600) / -Math.sin(xrayAngle);
+  paintXray(xrayHitX + Math.cos(xrayAngle) * xrayDistanceToTop, -600, xrayHitX, xrayHitY);
+  const [laserHitX, laserHitY] = fromCentre(laserAngle, 50);
+  const laserDistanceToEdge = (450 - laserHitX) / Math.cos(laserAngle);
+  paintLaser(450, laserHitY + Math.sin(laserAngle) * laserDistanceToEdge, laserHitX, laserHitY);
+  paintEnergyLadder();
+
+  // Ribbon (the stream) pours into the flask, then glass outline and bubbles on top.
+  paintStream();
+  paintFlaskOutline();
+  paintFuelBubbles();
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>

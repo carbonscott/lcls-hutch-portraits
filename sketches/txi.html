@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>txi: two X-ray beams meet at one virus, a vaccine</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// TXI portrait: "Two beams of light meet at one virus."
+// Top: two X-ray streaks (the second one with an amber edge) meet at a single
+//      spiky virus particle; its diffraction pattern spreads around it as
+//      rings and speckles.
+// Bottom: a vaccine vial with a coloured cap and a syringe beside it.
+// Ribbon: a teal band of downward chevrons flows from the rings into the vial.
+//
+// Coordinates: origin at the canvas centre, x -450..450, y -600..600, y down.
+
+const SEED = 52931;
+const PAPER = "#f1e8d6";
+
+// Series colour conventions (used only for the X-rays).
+const XRAY_VIOLET = "#4b1d8f";
+const XRAY_CYAN = "#2fb8d6";
+const SECOND_BEAM_AMBER = "#e0a21e";
+
+const INK = "#1c2226";
+const VIRUS_GREEN = "#5f9a3b";
+const VIRUS_GREEN_DARK = "#3a6e22";
+const SPIKE_ROSE = "#b8456a";
+const RING_TEAL = "#23698a";
+const SPECKLE_GOLD = "#d49a24";
+const LIQUID_TEAL = "#3a86a6";
+const GLASS = "#d3e1e6";
+const CAP_BLUE = "#2f6db5";
+const CRIMP_GREY = "#9aa1a8";
+
+// Virus and its diffraction halo.
+const VIRUS_X = 0;
+const VIRUS_Y = -300;
+const VIRUS_RADIUS = 96;
+const SPIKE_COUNT = 18;
+const HALO_RING_RADII = [172, 202, 233, 264];
+
+// Vial (body is a rounded box; neck, crimp and flip-top sit above it).
+const VIAL_X = -90;
+const VIAL_HALF_WIDTH = 80;
+const VIAL_BODY_TOP = 292;
+const VIAL_BOTTOM = 548;
+
+// Syringe: centre of the barrel and the tilt (needle points up and to the right).
+const SYRINGE_X = 235;
+const SYRINGE_Y = 385;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- small drawing helpers ----------
+
+function washPolygon(points, colour, opacity) {
+  brush.noStroke();
+  brush.noFill();
+  brush.wash(colour, opacity);
+  brush.polygon(points);
+  brush.noWash();
+}
+
+function washCircle(x, y, radius, colour, opacity) {
+  brush.noStroke();
+  brush.noFill();
+  brush.wash(colour, opacity);
+  brush.circle(x, y, radius);
+  brush.noWash();
+}
+
+// Watercolour layer on top of a flat wash: gives texture and a soft painted edge.
+function watercolourPolygon(points, colour, opacity, bleed, texture) {
+  brush.noStroke();
+  brush.noWash();
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, 0.3);
+  brush.polygon(points);
+  brush.noFill();
+}
+
+function watercolourCircle(x, y, radius, colour, opacity, bleed, texture) {
+  brush.noStroke();
+  brush.noWash();
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, 0.3);
+  brush.circle(x, y, radius);
+  brush.noFill();
+}
+
+function inkCircle(x, y, radius, colour, weight) {
+  brush.noFill();
+  brush.noWash();
+  brush.set("pen", colour, weight);
+  brush.circle(x, y, radius);
+}
+
+function inkPolygon(points, colour, weight) {
+  brush.noFill();
+  brush.noWash();
+  brush.set("pen", colour, weight);
+  brush.beginShape(0);
+  for (const [x, y] of points) brush.vertex(x, y);
+  brush.endShape(true);
+}
+
+// Axis-aligned box as a list of corners (x1 < x2, y1 < y2).
+function boxPoints(x1, y1, x2, y2) {
+  return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+}
+
+// Box with rounded bottom corners (for the vial body).
+function roundedBottomBox(x1, y1, x2, y2, cornerRadius) {
+  const points = [[x1, y1], [x2, y1]];
+  for (let i = 0; i <= 8; i++) {
+    const angle = (i / 8) * HALF_PI;
+    points.push([x2 - cornerRadius + cornerRadius * Math.cos(angle), y2 - cornerRadius + cornerRadius * Math.sin(angle)]);
+  }
+  for (let i = 0; i <= 8; i++) {
+    const angle = HALF_PI + (i / 8) * HALF_PI;
+    points.push([x1 + cornerRadius + cornerRadius * Math.cos(angle), y2 - cornerRadius + cornerRadius * Math.sin(angle)]);
+  }
+  return points;
+}
+
+// A straight bar of the given width between two points, as a 4-corner polygon.
+function barPoints(x1, y1, x2, y2, halfWidth1, halfWidth2) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const normalX = -(y2 - y1) / length;
+  const normalY = (x2 - x1) / length;
+  return [
+    [x1 + normalX * halfWidth1, y1 + normalY * halfWidth1],
+    [x2 + normalX * halfWidth2, y2 + normalY * halfWidth2],
+    [x2 - normalX * halfWidth2, y2 - normalY * halfWidth2],
+    [x1 - normalX * halfWidth1, y1 - normalY * halfWidth1],
+  ];
+}
+
+// Points along a cubic Bezier curve.
+function bezierPoints(p0, p1, p2, p3, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t) * (1 - t);
+    const b = 3 * (1 - t) * (1 - t) * t;
+    const c = 3 * (1 - t) * t * t;
+    const d = t * t * t;
+    points.push([
+      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+    ]);
+  }
+  return points;
+}
+
+// Unit normal of a polyline at index i (from its neighbours).
+function normalAt(points, i) {
+  const previous = points[Math.max(0, i - 1)];
+  const next = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(next[0] - previous[0], next[1] - previous[1]);
+  return [-(next[1] - previous[1]) / length, (next[0] - previous[0]) / length];
+}
+
+// Closed band around a centre line; widthAt(t) gives the width at fraction t
+// (0 at the start of the line, 1 at its end).
+function bandPolygon(centreLine, widthAt) {
+  const leftSide = [];
+  const rightSide = [];
+  for (let i = 0; i < centreLine.length; i++) {
+    const t = i / (centreLine.length - 1);
+    const halfWidth = widthAt(t) / 2;
+    const [normalX, normalY] = normalAt(centreLine, i);
+    const [x, y] = centreLine[i];
+    leftSide.push([x + normalX * halfWidth, y + normalY * halfWidth]);
+    rightSide.push([x - normalX * halfWidth, y - normalY * halfWidth]);
+  }
+  return leftSide.concat(rightSide.reverse());
+}
+
+// A V pointing straight down, centred on (x, y).
+function downChevron(x, y, arm, thickness) {
+  const tipY = y + arm * 0.5;
+  return [
+    [x - arm, tipY - arm], [x, tipY], [x + arm, tipY - arm],
+    [x + arm, tipY - arm - thickness], [x, tipY - thickness * 1.45], [x - arm, tipY - arm - thickness],
+  ];
+}
+
+// ---------- series conventions: X-ray streak and its starburst ----------
+
+// edgeSide (+1 or -1) chooses the side of the cyan edge line; an optional
+// extra colour paints a second edge line on the other side.
+function xrayStreak(x1, y1, x2, y2, edgeSide, extraEdgeColour) {
+  brush.noField();
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const normalX = -(y2 - y1) / length;
+  const normalY = (x2 - x1) / length;
+  washPolygon(barPoints(x1, y1, x2, y2, 2.5, 7), XRAY_VIOLET, 245);
+  brush.set("pen", XRAY_VIOLET, 2.4);
+  brush.line(x1, y1, x2, y2);
+  const edge = 13 * edgeSide;
+  brush.set("pen", XRAY_CYAN, 1.4);
+  brush.line(x1 + normalX * edge, y1 + normalY * edge, x2 + normalX * edge, y2 + normalY * edge);
+  if (extraEdgeColour) {
+    brush.set("pen", extraEdgeColour, 2.2);
+    brush.line(x1 - normalX * edge, y1 - normalY * edge, x2 - normalX * edge, y2 - normalY * edge);
+  }
+}
+
+function starburst(x, y, radius, shortSpikeColour) {
+  washCircle(x, y, radius * 0.33, "#ffd84a", 240);
+  for (let i = 0; i < 16; i++) {
+    const angle = (i / 16) * TWO_PI + 0.1;
+    const isLong = i % 2 === 0;
+    const outer = isLong ? radius : radius * 0.6;
+    brush.set("pen", isLong ? XRAY_CYAN : shortSpikeColour, isLong ? 1.6 : 1.4);
+    brush.line(x + Math.cos(angle) * radius * 0.3, y + Math.sin(angle) * radius * 0.3,
+               x + Math.cos(angle) * outer, y + Math.sin(angle) * outer);
+  }
+}
+
+// ---------- top: the diffraction halo and the virus ----------
+
+function paintHalo() {
+  brush.noField();
+  // Soft glow at the centre of the pattern.
+  washCircle(VIRUS_X, VIRUS_Y, 150, "#f3dc9a", 80);
+  // Rings: alternately bold and fine, like ripples.
+  for (let i = 0; i < HALO_RING_RADII.length; i++) {
+    const radius = HALO_RING_RADII[i];
+    inkCircle(VIRUS_X, VIRUS_Y, radius, RING_TEAL, i % 2 === 0 ? 2.6 : 1.4);
+  }
+  // Speckles sitting on and between the rings.
+  for (let i = 0; i < HALO_RING_RADII.length; i++) {
+    const count = 12 + i * 4;
+    for (let k = 0; k < count; k++) {
+      const angle = random(TWO_PI);
+      const radius = HALO_RING_RADII[i] + random(-9, 9);
+      const size = random(4, 8) * (1 - i * 0.12);
+      const colour = k % 3 === 0 ? SPECKLE_GOLD : RING_TEAL;
+      washCircle(VIRUS_X + Math.cos(angle) * radius, VIRUS_Y + Math.sin(angle) * radius, size, colour, 235);
+    }
+  }
+}
+
+function paintVirus() {
+  brush.noField();
+  // Spike stalks first, then the body over their roots, then the knobs.
+  for (let i = 0; i < SPIKE_COUNT; i++) {
+    const angle = (i / SPIKE_COUNT) * TWO_PI + 0.08;
+    const x1 = VIRUS_X + Math.cos(angle) * (VIRUS_RADIUS - 4);
+    const y1 = VIRUS_Y + Math.sin(angle) * (VIRUS_RADIUS - 4);
+    const x2 = VIRUS_X + Math.cos(angle) * (VIRUS_RADIUS + 34);
+    const y2 = VIRUS_Y + Math.sin(angle) * (VIRUS_RADIUS + 34);
+    washPolygon(barPoints(x1, y1, x2, y2, 4, 3.5), VIRUS_GREEN_DARK, 240);
+  }
+  washCircle(VIRUS_X, VIRUS_Y, VIRUS_RADIUS, VIRUS_GREEN, 240);
+  watercolourCircle(VIRUS_X, VIRUS_Y, VIRUS_RADIUS, "#4f8a30", 185, 0.06, 0.45);
+  // Surface pits.
+  const pits = [[-35, -30], [30, -42], [42, 18], [-10, 40], [-48, 20], [8, -5]];
+  for (const [dx, dy] of pits) washCircle(VIRUS_X + dx, VIRUS_Y + dy, 9, "#2f5a1c", 200);
+  inkCircle(VIRUS_X, VIRUS_Y, VIRUS_RADIUS, INK, 1.5);
+  for (let i = 0; i < SPIKE_COUNT; i++) {
+    const angle = (i / SPIKE_COUNT) * TWO_PI + 0.08;
+    const knobX = VIRUS_X + Math.cos(angle) * (VIRUS_RADIUS + 40);
+    const knobY = VIRUS_Y + Math.sin(angle) * (VIRUS_RADIUS + 40);
+    washCircle(knobX, knobY, 11, SPIKE_ROSE, 245);
+    inkCircle(knobX, knobY, 11, INK, 1.2);
+  }
+}
+
+// ---------- the ribbon ----------
+
+// Ribbon: wide at the top, narrowing slowly, then closing to a point
+// over its last fifth, like an arrow.
+const RIBBON_START_WIDTH = 124;
+const RIBBON_BODY_END_WIDTH = 70;
+const RIBBON_TIP_START = 0.8;
+
+function ribbonWidthAt(t) {
+  if (t < RIBBON_TIP_START) {
+    return RIBBON_START_WIDTH + (RIBBON_BODY_END_WIDTH - RIBBON_START_WIDTH) * (t / RIBBON_TIP_START);
+  }
+  const tipFraction = (t - RIBBON_TIP_START) / (1 - RIBBON_TIP_START);
+  return RIBBON_BODY_END_WIDTH * (1 - tipFraction) + 4 * tipFraction;
+}
+
+function paintRibbon() {
+  const centreLine = bezierPoints([0, -62], [0, 60], [VIAL_X, 40], [VIAL_X, 170], 40);
+  const band = bandPolygon(centreLine, ribbonWidthAt);
+  washPolygon(band, "#6aaec4", 200);
+  watercolourPolygon(band, LIQUID_TEAL, 180, 0.1, 0.45);
+  brush.noField();
+  brush.set("pen", "#1f5d78", 1.5);
+  brush.beginShape(0.3);
+  for (const [x, y] of band) brush.vertex(x, y);
+  brush.endShape(true);
+  const chevronPositions = [0.12, 0.36, 0.6];
+  for (const t of chevronPositions) {
+    const index = Math.round(t * (centreLine.length - 1));
+    const [x, y] = centreLine[index];
+    const halfWidth = ribbonWidthAt(t) / 2;
+    washPolygon(downChevron(x, y, halfWidth * 0.55, Math.max(7, halfWidth * 0.2)), "#1f5d78", 235);
+  }
+}
+
+// ---------- bottom: vaccine vial and syringe ----------
+
+function paintVial() {
+  brush.noField();
+  const left = VIAL_X - VIAL_HALF_WIDTH;
+  const right = VIAL_X + VIAL_HALF_WIDTH;
+  const body = roundedBottomBox(left, VIAL_BODY_TOP, right, VIAL_BOTTOM, 22);
+  const shoulderAndNeck = [
+    [left, VIAL_BODY_TOP + 2], [left + 18, VIAL_BODY_TOP - 26], [VIAL_X - 44, VIAL_BODY_TOP - 34],
+    [VIAL_X + 44, VIAL_BODY_TOP - 34], [right - 18, VIAL_BODY_TOP - 26], [right, VIAL_BODY_TOP + 2],
+  ];
+  const crimp = boxPoints(VIAL_X - 56, 208, VIAL_X + 56, 260);
+  const flipTop = boxPoints(VIAL_X - 50, 180, VIAL_X + 50, 210);
+  const liquid = roundedBottomBox(left + 8, 350, right - 8, VIAL_BOTTOM - 8, 16);
+  const label = boxPoints(left, 400, right, 480);
+
+  // Glass.
+  washPolygon(body, GLASS, 200);
+  washPolygon(shoulderAndNeck, GLASS, 200);
+  // Liquid.
+  washPolygon(liquid, LIQUID_TEAL, 235);
+  watercolourPolygon(liquid, LIQUID_TEAL, 185, 0, 0.4);
+  // Label band over the glass, with two plain lines (no writing).
+  washPolygon(label, "#fbf7ee", 255);
+  brush.set("pen", "#8a8f94", 1.1);
+  brush.line(left + 22, 425, right - 22, 425);
+  brush.line(left + 22, 452, right - 60, 452);
+  // Crimp and coloured flip-off cap.
+  washPolygon(crimp, CRIMP_GREY, 240);
+  washPolygon(flipTop, CAP_BLUE, 245);
+  watercolourPolygon(flipTop, CAP_BLUE, 185, 0.04, 0.3);
+  // Outlines.
+  inkPolygon(body, INK, 1.5);
+  inkPolygon(shoulderAndNeck, INK, 1.5);
+  inkPolygon(label, INK, 1.1);
+  inkPolygon(crimp, INK, 1.4);
+  inkPolygon(flipTop, INK, 1.4);
+  brush.set("pen", "#5f6b73", 1.1);
+  brush.line(VIAL_X - 56, 234, VIAL_X + 56, 234);
+  // Glass reflection.
+  brush.set("pen", "#ffffff", 2.2);
+  brush.line(left + 18, VIAL_BODY_TOP + 12, left + 18, 390);
+}
+
+// The syringe is drawn along +x in its own frame, then turned so the needle
+// points up and to the right.
+function paintSyringe() {
+  brush.noField();
+  push();
+  translate(SYRINGE_X, SYRINGE_Y);
+  rotate(-QUARTER_PI);
+
+  const barrel = boxPoints(-110, -32, 122, 32);
+  const liquid = boxPoints(-40, -29, 120, 29);
+  const stopper = boxPoints(-62, -30, -40, 30);
+  const rod = boxPoints(-200, -8, -62, 8);
+  const thumbRest = boxPoints(-212, -36, -198, 36);
+  const fingerFlange = boxPoints(-122, -56, -108, 56);
+  const hub = [[122, -17], [152, -9], [152, 9], [122, 17]];
+  const needle = [[152, -3], [262, -1.5], [282, 0], [262, 1.5], [152, 3]];
+
+  washPolygon(barrel, GLASS, 210);
+  washPolygon(liquid, LIQUID_TEAL, 235);
+  watercolourPolygon(liquid, LIQUID_TEAL, 185, 0, 0.4);
+  washPolygon(rod, "#c9ced2", 245);
+  washPolygon(thumbRest, "#c9ced2", 245);
+  washPolygon(fingerFlange, "#c9ced2", 245);
+  washPolygon(stopper, "#3b3f44", 245);
+  washPolygon(hub, "#c9ced2", 245);
+  washPolygon(needle, "#8d949a", 250);
+
+  inkPolygon(barrel, INK, 1.5);
+  inkPolygon(rod, INK, 1.2);
+  inkPolygon(thumbRest, INK, 1.3);
+  inkPolygon(fingerFlange, INK, 1.3);
+  inkPolygon(hub, INK, 1.2);
+  inkPolygon(needle, INK, 1.0);
+  // Graduation marks along the barrel (plain ticks, no numbers).
+  brush.set("pen", INK, 1.1);
+  for (let x = -30; x <= 110; x += 14) {
+    const long = Math.round((x + 30) / 14) % 2 === 0;
+    brush.line(x, -32, x, long ? -14 : -21);
+  }
+  // A drop at the needle tip.
+  washCircle(292, 0, 6, LIQUID_TEAL, 240);
+  pop();
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  paintRibbon();
+  paintHalo();
+  paintVial();
+  paintSyringe();
+  paintVirus();
+
+  // Two X-ray streaks meet at the virus; each ends in a starburst at the spikes.
+  const reach = VIRUS_RADIUS + 58;
+  const beams = [
+    { startX: -450, startY: -588, edgeSide: -1, extra: null, shortSpikes: XRAY_VIOLET },
+    { startX: 450, startY: -588, edgeSide: 1, extra: SECOND_BEAM_AMBER, shortSpikes: SECOND_BEAM_AMBER },
+  ];
+  for (const beam of beams) {
+    const towardX = VIRUS_X - beam.startX;
+    const towardY = VIRUS_Y - beam.startY;
+    const length = Math.hypot(towardX, towardY);
+    const endX = VIRUS_X - (towardX / length) * reach;
+    const endY = VIRUS_Y - (towardY / length) * reach;
+    xrayStreak(beam.startX, beam.startY, endX, endY, beam.edgeSide, beam.extra);
+    starburst(endX, endY, 36, beam.shortSpikes);
+  }
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>

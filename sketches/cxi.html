@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cxi: a stream of tiny crystals becomes a key for a lock</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// CXI portrait: X-ray flashes hit a stream of tiny protein crystals, one by one.
+// Each flash gives a small spot pattern; the patterns merge into one protein
+// structure. Below, that protein's pocket holds a drug molecule (key in a lock),
+// next to a capsule and pills: designing medicines that fit proteins.
+//
+// Coordinates: canvas centre is the origin, x -450..450, y -600..600, y down.
+
+const SEED = 31415;
+const PAPER = "#f1e8d6";
+
+// Series conventions.
+const XRAY_VIOLET = "#4b1d8f";
+const XRAY_CYAN = "#2fb8d6";
+const BURST_GOLD = "#f2b731";
+
+// Portrait colours.
+const INK = "#1d2430";
+const JET_BLUE = "#9ccbe2";
+const CRYSTAL_AQUA = "#4fb3a3";
+const PATTERN_DISK = "#cfe0ea";
+const SPOT_NAVY = "#1c2f4f";
+const PROTEIN_TEAL = "#7fc8b8";
+const HELIX_TEAL = "#136458";
+const STRAND_GREEN = "#5d9c3a";
+const DRUG_GOLD = "#f0b12a";
+const DRUG_BLUE = "#2c5ca8";
+const RIBBON_TEAL = "#4fa393";
+const RIBBON_DARK = "#23695c";
+const PILL_PINK = "#e58aae";
+const PILL_BLUE = "#7fb0de";
+const PILL_YELLOW = "#f0c75a";
+
+// Layout.
+const JET_Y = -430;
+const CRYSTAL_XS = [-392, -296, -200, -104, 0, 96, 192, 288, 384];
+const HIT_XS = [-296, -104, 96, 288];   // crystals hit by an X-ray flash
+const PATTERN_Y = -318;
+const PATTERN_RADIUS = 44;
+const PROTEIN_X = 0;
+const PROTEIN_Y = -135;
+const LOCK_X = -120;
+const LOCK_TOP_Y = 250;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- geometry helpers ----------
+
+function ellipsePoints(centreX, centreY, radiusX, radiusY, fromAngle, toAngle, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = fromAngle + (toAngle - fromAngle) * (i / steps);
+    points.push([centreX + radiusX * Math.cos(angle), centreY + radiusY * Math.sin(angle)]);
+  }
+  return points;
+}
+
+function densify(points, maxStep) {
+  const result = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const pieces = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / maxStep));
+    for (let k = 0; k < pieces; k++) {
+      result.push([x1 + (x2 - x1) * (k / pieces), y1 + (y2 - y1) * (k / pieces)]);
+    }
+  }
+  return result;
+}
+
+// Rotate a list of points (screen maths, clockwise for positive angle since y is down).
+function rotatePoints(points, centreX, centreY, angle) {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  return points.map(([x, y]) => {
+    const dx = x - centreX;
+    const dy = y - centreY;
+    return [centreX + dx * c - dy * s, centreY + dx * s + dy * c];
+  });
+}
+
+// Points along a quadratic Bezier curve.
+function quadCurve(start, control, end, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t);
+    const b = 2 * (1 - t) * t;
+    const c = t * t;
+    points.push([a * start[0] + b * control[0] + c * end[0], a * start[1] + b * control[1] + c * end[1]]);
+  }
+  return points;
+}
+
+// Unit tangent and normal of a polyline at index i.
+function frameAt(points, i) {
+  const previous = points[Math.max(0, i - 1)];
+  const next = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(next[0] - previous[0], next[1] - previous[1]);
+  const tangent = [(next[0] - previous[0]) / length, (next[1] - previous[1]) / length];
+  const normal = [-tangent[1], tangent[0]];
+  return { tangent, normal };
+}
+
+// ---------- painting helpers ----------
+
+function setWatercolour(colour, opacity, bleed, texture, border) {
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, border);
+}
+
+// Flat, cheap fill (no bleed, no texture).
+function setFlatFill(colour, opacity) {
+  brush.fill(colour, opacity);
+  brush.fillBleed(0, "out");
+  brush.fillTexture(0, 0);
+}
+
+function closedOutline(points, curvature) {
+  brush.beginShape(curvature);
+  for (const [x, y] of points) brush.vertex(x, y);
+  brush.endShape(true);
+}
+
+// Small bright starburst where an X-ray hits.
+function starburst(x, y, radius) {
+  const rays = 12;
+  for (let i = 0; i < rays; i++) {
+    const angle = (i / rays) * TWO_PI + 0.13;
+    const long = i % 2 === 0;
+    const inner = radius * 0.25;
+    const outer = long ? radius : radius * 0.6;
+    brush.set("pen", long ? BURST_GOLD : XRAY_CYAN, long ? 1.6 : 1.3);
+    brush.line(x + inner * Math.cos(angle), y + inner * Math.sin(angle),
+               x + outer * Math.cos(angle), y + outer * Math.sin(angle));
+  }
+  brush.noStroke();
+  brush.wash("#fff4c2", 230);
+  brush.circle(x, y, radius * 0.22);
+  brush.noWash();
+}
+
+// X-ray streak: sharp violet core, thin cyan edge line, starburst at the end.
+function xrayStreak(x1, y1, x2, y2, burstRadius) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length;
+  const uy = (y2 - y1) / length;
+  const nx = -uy;
+  const ny = ux;
+  const halfWidth = 3.5;
+  brush.noStroke();
+  brush.wash(XRAY_VIOLET, 235);
+  brush.polygon([
+    [x1 + nx * halfWidth * 0.6, y1 + ny * halfWidth * 0.6],
+    [x2 + nx * halfWidth, y2 + ny * halfWidth],
+    [x2 - nx * halfWidth, y2 - ny * halfWidth],
+    [x1 - nx * halfWidth * 0.6, y1 - ny * halfWidth * 0.6],
+  ]);
+  brush.noWash();
+  brush.set("pen", XRAY_VIOLET, 2.4);
+  brush.line(x1, y1, x2, y2);
+  brush.set("pen", XRAY_CYAN, 1.3);
+  const edge = 8;
+  brush.line(x1 + nx * edge, y1 + ny * edge, x2 + nx * edge - ux * 10, y2 + ny * edge - uy * 10);
+  starburst(x2, y2, burstRadius);
+}
+
+// Wide tapering band with downward chevrons: "this leads to this".
+function paintRibbon(centre, startWidth, endWidth) {
+  const left = [];
+  const right = [];
+  for (let i = 0; i < centre.length; i++) {
+    const { normal } = frameAt(centre, i);
+    const halfWidth = 0.5 * (startWidth + (endWidth - startWidth) * (i / (centre.length - 1)));
+    left.push([centre[i][0] + normal[0] * halfWidth, centre[i][1] + normal[1] * halfWidth]);
+    right.push([centre[i][0] - normal[0] * halfWidth, centre[i][1] - normal[1] * halfWidth]);
+  }
+  const band = left.concat(right.reverse());
+  brush.set("2B", RIBBON_DARK, 1.3);
+  setWatercolour(RIBBON_TEAL, 215, 0.03, 0.35, 0.3);
+  brush.fillTexture(0.35, 0.3, false);
+  brush.polygon(densify(band, 25));
+  brush.noFill();
+
+  // Chevrons pointing downstream.
+  brush.noStroke();
+  brush.wash(RIBBON_DARK, 210);
+  const chevronCount = 4;
+  for (let k = 0; k < chevronCount; k++) {
+    const i = Math.round((k + 0.6) / (chevronCount + 0.2) * (centre.length - 1));
+    const { tangent, normal } = frameAt(centre, i);
+    const halfWidth = 0.32 * (startWidth + (endWidth - startWidth) * (i / (centre.length - 1)));
+    const depth = halfWidth * 0.7;
+    const thickness = 11;
+    const [px, py] = centre[i];
+    const armLeft = [px + normal[0] * halfWidth - tangent[0] * depth, py + normal[1] * halfWidth - tangent[1] * depth];
+    const tip = [px + tangent[0] * depth * 0.4, py + tangent[1] * depth * 0.4];
+    const armRight = [px - normal[0] * halfWidth - tangent[0] * depth, py - normal[1] * halfWidth - tangent[1] * depth];
+    const back = (p) => [p[0] - tangent[0] * thickness, p[1] - tangent[1] * thickness];
+    brush.polygon([armLeft, tip, armRight, back(armRight), back(tip), back(armLeft)]);
+  }
+  brush.noWash();
+}
+
+// ---------- science scene ----------
+
+function paintJet() {
+  const top = [];
+  const bottom = [];
+  for (let x = -460; x <= 460; x += 40) {
+    top.push([x, JET_Y - 9 + 1.5 * Math.sin(x * 0.03)]);
+    bottom.push([x, JET_Y + 9 + 1.5 * Math.sin(x * 0.03 + 1)]);
+  }
+  brush.noStroke();
+  setWatercolour(JET_BLUE, 200, 0.03, 0.3, 0.25);
+  brush.fillTexture(0.3, 0.25, false);
+  brush.polygon(top.concat(bottom.slice().reverse()));
+  brush.noFill();
+  brush.set("HB", "#3f7896", 1.2);
+  brush.spline(top, 0.5);
+  brush.spline(bottom, 0.5);
+}
+
+function hexagonPoints(x, y, radius, angle) {
+  const points = [];
+  for (let i = 0; i < 6; i++) {
+    const a = angle + (i / 6) * TWO_PI;
+    points.push([x + radius * Math.cos(a), y + radius * 0.85 * Math.sin(a)]);
+  }
+  return points;
+}
+
+function paintCrystals() {
+  for (const x of CRYSTAL_XS) {
+    const hit = HIT_XS.includes(x);
+    const radius = 21;
+    const tilt = random(-0.3, 0.3);
+    brush.set("pen", "#123f38", 1.2);
+    setFlatFill(CRYSTAL_AQUA, 230);
+    brush.polygon(hexagonPoints(x, JET_Y, radius, tilt));
+    brush.noFill();
+    // facet lines
+    brush.set("pen", "#123f38", 0.8);
+    const hex = hexagonPoints(x, JET_Y, radius, tilt);
+    brush.line(hex[0][0], hex[0][1], hex[3][0], hex[3][1]);
+    if (hit) {
+      // fragments flying off a bursting crystal
+      brush.set("pen", "#123f38", 1);
+      setFlatFill(CRYSTAL_AQUA, 230);
+      for (let k = 0; k < 4; k++) {
+        const a = -0.2 + k * 0.9 + random(-0.2, 0.2);
+        const fx = x + 34 * Math.cos(a);
+        const fy = JET_Y + 30 * Math.sin(a);
+        brush.polygon([[fx, fy - 5], [fx + 6, fy + 3], [fx - 5, fy + 4]]);
+      }
+      brush.noFill();
+    }
+  }
+}
+
+function paintXrayFlashes() {
+  for (const x of HIT_XS) {
+    xrayStreak(x - 95, -600, x - 7, JET_Y - 17, 30);
+  }
+}
+
+// One small diffraction pattern: a disk with a lattice of spots.
+function paintPattern(x, y, rotation) {
+  // pale cone from the crystal to its pattern
+  brush.noStroke();
+  brush.wash("#bcd6e3", 140);
+  brush.polygon([[x - 6, JET_Y + 14], [x + 6, JET_Y + 14], [x + PATTERN_RADIUS * 0.8, y - PATTERN_RADIUS * 0.6],
+                 [x - PATTERN_RADIUS * 0.8, y - PATTERN_RADIUS * 0.6]]);
+  brush.noWash();
+
+  brush.set("pen", INK, 1.2);
+  setWatercolour(PATTERN_DISK, 200, 0.04, 0.3, 0.3);
+  brush.circle(x, y, PATTERN_RADIUS);
+  brush.noFill();
+
+  brush.noStroke();
+  brush.wash(SPOT_NAVY, 230);
+  const spacing = 11;
+  const c = Math.cos(rotation);
+  const s = Math.sin(rotation);
+  for (let i = -4; i <= 4; i++) {
+    for (let j = -4; j <= 4; j++) {
+      const lx = i * spacing;
+      const ly = j * spacing;
+      const sx = x + lx * c - ly * s;
+      const sy = y + lx * s + ly * c;
+      const distance = Math.hypot(sx - x, sy - y);
+      if (distance > PATTERN_RADIUS - 7 || distance < 6) continue;
+      if (random() < 0.25) continue;
+      brush.circle(sx, sy, random(1.6, 3.6));
+    }
+  }
+  brush.noWash();
+  // central direct-beam spot
+  brush.set("pen", SPOT_NAVY, 1);
+  brush.circle(x, y, 3);
+}
+
+function paintPatterns() {
+  const rotations = [0.2, 0.75, -0.4, 1.2];
+  HIT_XS.forEach((x, index) => paintPattern(x, PATTERN_Y, rotations[index]));
+}
+
+// Arrows from each pattern into the protein: many patterns merge into one.
+function paintMergeArrows() {
+  const targets = [[-170, -165], [-70, -222], [70, -222], [170, -165]];
+  brush.set("pen", HELIX_TEAL, 2);
+  HIT_XS.forEach((x, index) => {
+    const start = [x * 0.93, PATTERN_Y + PATTERN_RADIUS + 8];
+    const end = targets[index];
+    const control = [(start[0] + end[0]) / 2 + (x < 0 ? -10 : 10), (start[1] + end[1]) / 2 + 10];
+    const path = quadCurve(start, control, end, 8);
+    brush.spline(path, 0.5);
+    const { tangent, normal } = frameAt(path, path.length - 1);
+    const size = 16;
+    brush.line(end[0], end[1], end[0] - tangent[0] * size + normal[0] * size * 0.6, end[1] - tangent[1] * size + normal[1] * size * 0.6);
+    brush.line(end[0], end[1], end[0] - tangent[0] * size - normal[0] * size * 0.6, end[1] - tangent[1] * size - normal[1] * size * 0.6);
+  });
+}
+
+// A coiled helix (protein ribbon cartoon), drawn as a looping stroke.
+function helixPoints(startX, startY, endX, endY, turns, radius) {
+  const points = [];
+  const steps = turns * 10;
+  const length = Math.hypot(endX - startX, endY - startY);
+  const ux = (endX - startX) / length;
+  const uy = (endY - startY) / length;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const phase = t * turns * TWO_PI;
+    const along = t * length + radius * 0.8 * Math.cos(phase);
+    const across = radius * Math.sin(phase);
+    points.push([startX + ux * along - uy * across, startY + uy * along + ux * across]);
+  }
+  return points;
+}
+
+function arrowPolygon(x1, y1, x2, y2, halfWidth, headHalfWidth, headLength) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length;
+  const uy = (y2 - y1) / length;
+  const nx = -uy;
+  const ny = ux;
+  const bx = x2 - ux * headLength;
+  const by = y2 - uy * headLength;
+  return [
+    [x1 + nx * halfWidth, y1 + ny * halfWidth],
+    [bx + nx * halfWidth, by + ny * halfWidth],
+    [bx + nx * headHalfWidth, by + ny * headHalfWidth],
+    [x2, y2],
+    [bx - nx * headHalfWidth, by - ny * headHalfWidth],
+    [bx - nx * halfWidth, by - ny * halfWidth],
+    [x1 - nx * halfWidth, y1 - ny * halfWidth],
+  ];
+}
+
+function proteinOutline(centreX, centreY, radiusX, radiusY) {
+  const points = [];
+  const steps = 36;
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * TWO_PI;
+    const wobble = 1 + 0.07 * Math.sin(3 * a + 0.5) + 0.05 * Math.sin(5 * a + 1.3);
+    points.push([centreX + radiusX * wobble * Math.cos(a), centreY + radiusY * wobble * Math.sin(a)]);
+  }
+  return points;
+}
+
+function paintProtein() {
+  const outline = proteinOutline(PROTEIN_X, PROTEIN_Y, 185, 92);
+  brush.set("charcoal", "#0f4a41", 1.4);
+  setWatercolour(PROTEIN_TEAL, 200, 0.1, 0.45, 0.35);
+  closedOutline(outline, 0.5);
+  brush.noFill();
+
+  // beta strands (broad arrows)
+  brush.set("pen", "#244a16", 1.2);
+  setWatercolour(STRAND_GREEN, 225, 0.05, 0.35, 0.3);
+  brush.polygon(arrowPolygon(-125, -105, 5, -95, 12, 22, 28));
+  brush.polygon(arrowPolygon(20, -68, -115, -72, 12, 22, 28));
+  brush.noFill();
+
+  // alpha helices (coils) and the chain that joins them
+  brush.set("pen", HELIX_TEAL, 2.6);
+  brush.spline(helixPoints(-150, -175, -30, -188, 3, 21), 0.5);
+  brush.spline(helixPoints(15, -190, 145, -160, 3, 21), 0.5);
+  brush.spline(helixPoints(55, -120, 125, -70, 2, 19), 0.5);
+  brush.set("pen", HELIX_TEAL, 1.6);
+  brush.spline([[-30, -188], [-5, -205], [15, -190]], 0.5);
+  brush.spline([[145, -160], [160, -135], [55, -120]], 0.5);
+  brush.spline([[125, -70], [90, -55], [20, -68]], 0.5);
+  brush.spline([[-115, -72], [-165, -110], [-150, -175]], 0.5);
+}
+
+// ---------- everyday scene ----------
+
+// The same protein, now as a lock: a big teal shape with a pocket on top.
+function lockOutline() {
+  const left = LOCK_X - 210;
+  const right = LOCK_X + 200;
+  const top = LOCK_TOP_Y;
+  const bottom = LOCK_TOP_Y + 260;
+  const pocketLeft = LOCK_X - 62;
+  const pocketRight = LOCK_X + 62;
+  const pocketBottom = LOCK_TOP_Y + 78;
+  const points = [];
+  // top edge from the left shoulder to the pocket
+  points.push([left + 30, top + 40], [left + 90, top + 8], [pocketLeft - 30, top]);
+  // pocket: a rounded U that matches the drug molecule
+  points.push([pocketLeft, top + 6], [pocketLeft + 4, top + 44], [pocketLeft + 22, pocketBottom - 4],
+              [LOCK_X, pocketBottom + 4], [pocketRight - 22, pocketBottom - 4], [pocketRight - 4, top + 44],
+              [pocketRight, top + 6]);
+  // top edge to the right shoulder, then around the bottom
+  points.push([pocketRight + 30, top], [right - 80, top + 10], [right - 10, top + 60],
+              [right, top + 150], [right - 50, bottom - 20], [LOCK_X + 40, bottom],
+              [left + 60, bottom - 15], [left, top + 170], [left, top + 90]);
+  return points;
+}
+
+function paintLock() {
+  brush.set("charcoal", "#0f4a41", 1.5);
+  setWatercolour(PROTEIN_TEAL, 215, 0.08, 0.45, 0.35);
+  closedOutline(lockOutline(), 0.35);
+  brush.noFill();
+  // coil hints inside, linking it to the protein above
+  brush.set("pen", HELIX_TEAL, 2.6);
+  brush.spline(helixPoints(LOCK_X - 175, LOCK_TOP_Y + 150, LOCK_X - 45, LOCK_TOP_Y + 185, 3, 21), 0.5);
+  brush.spline(helixPoints(LOCK_X + 25, LOCK_TOP_Y + 195, LOCK_X + 155, LOCK_TOP_Y + 135, 3, 21), 0.5);
+  brush.set("pen", HELIX_TEAL, 1.6);
+  brush.spline([[LOCK_X - 45, LOCK_TOP_Y + 185], [LOCK_X - 10, LOCK_TOP_Y + 215], [LOCK_X + 25, LOCK_TOP_Y + 195]], 0.5);
+}
+
+// Drug molecule (ball-and-stick) sitting in the pocket: the key.
+function paintDrugMolecule() {
+  const cx = LOCK_X;
+  const atoms = [
+    [cx, LOCK_TOP_Y + 56, 20, DRUG_GOLD],
+    [cx - 34, LOCK_TOP_Y + 22, 15, DRUG_BLUE],
+    [cx + 34, LOCK_TOP_Y + 22, 15, DRUG_BLUE],
+    [cx, LOCK_TOP_Y - 18, 16, DRUG_GOLD],
+    [cx - 44, LOCK_TOP_Y - 40, 12, DRUG_BLUE],
+  ];
+  const bonds = [[0, 1], [0, 2], [1, 3], [2, 3], [3, 4]];
+  brush.set("pen", INK, 2.2);
+  for (const [a, b] of bonds) brush.line(atoms[a][0], atoms[a][1], atoms[b][0], atoms[b][1]);
+  for (const [x, y, radius, colour] of atoms) {
+    brush.set("pen", INK, 1.3);
+    setFlatFill(colour, 245);
+    brush.circle(x, y, radius);
+    brush.noFill();
+  }
+}
+
+function capsuleHalf(centreX, centreY, length, radius, angle, side) {
+  // side -1 = left half, +1 = right half, before rotation (long axis along x)
+  const points = [];
+  const half = length / 2;
+  const capCentreX = centreX + side * (half - radius);
+  if (side < 0) {
+    points.push([centreX, centreY - radius]);
+    points.push(...ellipsePoints(capCentreX, centreY, radius, radius, -HALF_PI, -3 * HALF_PI, 14));
+    points.push([centreX, centreY + radius]);
+  } else {
+    points.push([centreX, centreY + radius]);
+    points.push(...ellipsePoints(capCentreX, centreY, radius, radius, HALF_PI, -HALF_PI, 14));
+    points.push([centreX, centreY - radius]);
+  }
+  return rotatePoints(points, centreX, centreY, angle);
+}
+
+function paintCapsule() {
+  const x = 245;
+  const y = 300;
+  const length = 240;
+  const radius = 44;
+  const angle = -0.5;
+  brush.set("pen", INK, 1.5);
+  brush.wash(DRUG_BLUE, 190);
+  setWatercolour(DRUG_BLUE, 250, 0.04, 0.25, 0.3);
+  brush.polygon(capsuleHalf(x, y, length, radius, angle, -1));
+  brush.wash(DRUG_GOLD, 190);
+  setWatercolour(DRUG_GOLD, 250, 0.04, 0.25, 0.3);
+  brush.polygon(capsuleHalf(x, y, length, radius, angle, 1));
+  brush.noWash();
+  brush.noFill();
+  // shine strips
+  brush.noStroke();
+  brush.wash("#ffffff", 120);
+  brush.polygon(rotatePoints([[x - 90, y - 26], [x + 90, y - 26], [x + 90, y - 18], [x - 90, y - 18]], x, y, angle));
+  brush.noWash();
+}
+
+function paintTablet(x, y, colour) {
+  const radiusX = 46;
+  const radiusY = 23;
+  const thickness = 13;
+  const side = ellipsePoints(x, y, radiusX, radiusY, 0, PI, 16).concat(
+    ellipsePoints(x, y + thickness, radiusX, radiusY, PI, 0, 16));
+  brush.set("pen", INK, 1.3);
+  setWatercolour(colour, 230, 0.03, 0.3, 0.2);
+  brush.polygon(side);
+  setWatercolour(colour, 190, 0.03, 0.3, 0.2);
+  brush.polygon(ellipsePoints(x, y, radiusX, radiusY, 0, TWO_PI, 28));
+  brush.noFill();
+  brush.set("pen", INK, 1.1);
+  brush.line(x - radiusX * 0.7, y - 4, x + radiusX * 0.7, y + 4);
+}
+
+function paintPills() {
+  paintTablet(165, 470, PILL_PINK);
+  paintTablet(285, 505, PILL_BLUE);
+  paintTablet(370, 430, PILL_YELLOW);
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  // science scene
+  paintJet();
+  paintPatterns();
+  paintCrystals();
+  paintXrayFlashes();
+  paintMergeArrows();
+  paintProtein();
+
+  // ribbon: the merged protein leads down into the key-and-lock
+  paintRibbon(quadCurve([0, 2], [-30, 90], [LOCK_X + 6, LOCK_TOP_Y - 72], 16), 150, 44);
+
+  // everyday scene
+  paintLock();
+  paintDrugMolecule();
+  paintCapsule();
+  paintPills();
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>

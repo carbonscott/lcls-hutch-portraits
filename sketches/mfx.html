@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mfx: catching an enzyme's picture in the instant before it shatters</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// MFX portrait.
+// Top (science): a violet X-ray flash hits a gem-like protein crystal. Inside
+// the crystal a coiled protein ribbon cradles a glowing cluster of metal atoms.
+// The crystal is starting to crack and shed shards, but a round pattern of
+// diffraction spots has already flown out ahead of the debris.
+// Bottom (everyday): a green leaf under water gives off rising oxygen bubbles
+// toward the bright surface and the sun.
+// Ribbon: a wide band carries the diffraction spots down to the leaf, where
+// they turn into bubbles.
+//
+// Coordinates: canvas centre is the origin, x -450..450, y -600..600, y down.
+
+const SEED = 4101;
+const PAPER = "#f1e8d6";
+
+// Series colour conventions (used for X-ray light only).
+const XRAY_VIOLET = "#4b1d8f";
+const XRAY_CYAN = "#2fb8d6";
+
+// Crystal placement.
+const CRYSTAL_X = -95;
+const CRYSTAL_Y = -320;
+const CRYSTAL_TILT = 0.18; // radians, clockwise on screen
+const CRYSTAL_SCALE = 1.1;
+
+// Diffraction pattern placement.
+const PATTERN_X = 318;
+const PATTERN_Y = -330;
+const PATTERN_RADIUS = 120;
+
+// Water surface height and leaf axis (base -> tip).
+const WATER_Y = 170;
+const LEAF_BASE = [-320, 555];
+const LEAF_TIP = [215, 305];
+const LEAF_HALF_WIDTH = 128;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- small geometry helpers ----------
+
+function ellipsePoints(centreX, centreY, radiusX, radiusY, fromAngle, toAngle, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = fromAngle + (toAngle - fromAngle) * (i / steps);
+    points.push([centreX + radiusX * Math.cos(angle), centreY + radiusY * Math.sin(angle)]);
+  }
+  return points;
+}
+
+function densify(points, maxStep) {
+  const result = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const pieces = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / maxStep));
+    for (let k = 0; k < pieces; k++) {
+      result.push([x1 + (x2 - x1) * (k / pieces), y1 + (y2 - y1) * (k / pieces)]);
+    }
+  }
+  return result;
+}
+
+// Points along a cubic Bezier curve.
+function bezierPoints(p0, p1, p2, p3, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t) * (1 - t);
+    const b = 3 * (1 - t) * (1 - t) * t;
+    const c = 3 * (1 - t) * t * t;
+    const d = t * t * t;
+    points.push([
+      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+    ]);
+  }
+  return points;
+}
+
+// Unit tangent and normal of a polyline at point index i.
+function tangentAt(points, i) {
+  const before = points[Math.max(0, i - 1)];
+  const after = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(after[0] - before[0], after[1] - before[1]) || 1;
+  const tx = (after[0] - before[0]) / length;
+  const ty = (after[1] - before[1]) / length;
+  return { tx, ty, nx: -ty, ny: tx };
+}
+
+// Closed band around a centre line; halfWidth(t) gives the half width at t in 0..1.
+function bandPolygon(centreLine, halfWidth) {
+  const left = [];
+  const right = [];
+  for (let i = 0; i < centreLine.length; i++) {
+    const { nx, ny } = tangentAt(centreLine, i);
+    const w = halfWidth(i / (centreLine.length - 1));
+    left.push([centreLine[i][0] + nx * w, centreLine[i][1] + ny * w]);
+    right.push([centreLine[i][0] - nx * w, centreLine[i][1] - ny * w]);
+  }
+  return left.concat(right.reverse());
+}
+
+function setWatercolour(colour, opacity, bleed, texture, border) {
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, border);
+}
+
+function closedOutline(points, curvature) {
+  brush.beginShape(curvature);
+  for (const [x, y] of points) brush.vertex(x, y);
+  brush.endShape(true);
+}
+
+// ---------- series conventions: X-ray streak and starburst ----------
+
+function paintStarburst(x, y, size) {
+  brush.noStroke();
+  brush.wash("#ffd84a", 230);
+  brush.circle(x, y, size * 0.45);
+  brush.noWash();
+  const rays = 14;
+  for (let i = 0; i < rays; i++) {
+    const angle = (i / rays) * TWO_PI + 0.1;
+    const long = i % 2 === 0;
+    const inner = size * 0.35;
+    const outer = long ? size * 1.25 : size * 0.8;
+    brush.set("pen", long ? XRAY_VIOLET : XRAY_CYAN, long ? 1.6 : 1.3);
+    brush.line(x + inner * Math.cos(angle), y + inner * Math.sin(angle),
+               x + outer * Math.cos(angle), y + outer * Math.sin(angle));
+  }
+}
+
+// Sharp straight X-ray streak: deep violet core, thin cyan edge, starburst at the hit.
+function paintXray(x1, y1, x2, y2) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length;
+  const uy = (y2 - y1) / length;
+  const nx = -uy;
+  const ny = ux;
+  brush.noStroke();
+  brush.wash(XRAY_VIOLET, 235);
+  brush.polygon([
+    [x1 + nx * 2, y1 + ny * 2], [x2 + nx * 5, y2 + ny * 5],
+    [x2 - nx * 5, y2 - ny * 5], [x1 - nx * 2, y1 - ny * 2],
+  ]);
+  brush.noWash();
+  brush.set("pen", XRAY_VIOLET, 3);
+  brush.line(x1, y1, x2, y2);
+  brush.set("pen", XRAY_CYAN, 1.3);
+  brush.line(x1 - nx * 11, y1 - ny * 11, x2 - nx * 11 - ux * 14, y2 - ny * 11 - uy * 14);
+  paintStarburst(x2, y2, 34);
+}
+
+// ---------- the crystal ----------
+
+// Crystal-local point -> canvas point (rotate by the tilt, then move into place).
+function crystalPoint(x, y) {
+  const c = Math.cos(CRYSTAL_TILT);
+  const s = Math.sin(CRYSTAL_TILT);
+  const sx = x * CRYSTAL_SCALE;
+  const sy = y * CRYSTAL_SCALE;
+  return [CRYSTAL_X + sx * c - sy * s, CRYSTAL_Y + sx * s + sy * c];
+}
+
+function crystalPoints(list) {
+  return list.map(([x, y]) => crystalPoint(x, y));
+}
+
+// Hexagonal prism with pointed caps, seen from the side (local coordinates).
+const GEM = {
+  top: [0, -200],
+  leftTop: [-140, -125], frontLeftTop: [-62, -108], frontRightTop: [62, -108], rightTop: [140, -125],
+  leftBottom: [-140, 125], frontLeftBottom: [-62, 142], frontRightBottom: [62, 142], rightBottom: [140, 125],
+  bottom: [0, 210],
+};
+
+function paintCrystal() {
+  const g = GEM;
+  const silhouette = crystalPoints([g.top, g.rightTop, g.rightBottom, g.bottom, g.leftBottom, g.leftTop]);
+
+  // Body: pale ice-blue watercolour.
+  brush.noStroke();
+  setWatercolour("#8ec9df", 185, 0.08, 0.35, 0.25);
+  brush.polygon(densify(silhouette, 30));
+  brush.noFill();
+
+  // Shaded facets (right face, lower caps) as flat washes.
+  brush.wash("#4f8fb3", 95);
+  brush.polygon(crystalPoints([g.frontRightTop, g.rightTop, g.rightBottom, g.frontRightBottom]));
+  brush.polygon(crystalPoints([g.bottom, g.frontRightBottom, g.rightBottom]));
+  brush.noWash();
+  brush.wash("#4f8fb3", 55);
+  brush.polygon(crystalPoints([g.top, g.frontRightTop, g.rightTop]));
+  brush.polygon(crystalPoints([g.bottom, g.frontLeftBottom, g.frontRightBottom]));
+  brush.noWash();
+
+  // Facet edges.
+  brush.set("pen", "#2c5d78", 1.2);
+  const edges = [
+    [g.top, g.frontLeftTop], [g.top, g.frontRightTop],
+    [g.leftTop, g.frontLeftTop], [g.frontLeftTop, g.frontRightTop], [g.frontRightTop, g.rightTop],
+    [g.frontLeftTop, g.frontLeftBottom], [g.frontRightTop, g.frontRightBottom],
+    [g.leftBottom, g.frontLeftBottom], [g.frontLeftBottom, g.frontRightBottom], [g.frontRightBottom, g.rightBottom],
+    [g.bottom, g.frontLeftBottom], [g.bottom, g.frontRightBottom],
+  ];
+  for (const [a, b] of edges) {
+    const [x1, y1] = crystalPoint(a[0], a[1]);
+    const [x2, y2] = crystalPoint(b[0], b[1]);
+    brush.line(x1, y1, x2, y2);
+  }
+
+  // Strong outline.
+  brush.set("pen", "#16303f", 1.7);
+  closedOutline(silhouette, 0);
+}
+
+// Closed band around a centre line with one half width per point.
+function bandPolygonWidths(centreLine, halfWidths) {
+  const left = [];
+  const right = [];
+  for (let i = 0; i < centreLine.length; i++) {
+    const { nx, ny } = tangentAt(centreLine, i);
+    left.push([centreLine[i][0] + nx * halfWidths[i], centreLine[i][1] + ny * halfWidths[i]]);
+    right.push([centreLine[i][0] - nx * halfWidths[i], centreLine[i][1] - ny * halfWidths[i]]);
+  }
+  return left.concat(right.reverse());
+}
+
+// Coiled protein ribbon (a twisted helix band) wrapped as a U-shaped cradle
+// around the cluster. The helix is cut into half turns: front half turns are
+// dark, back half turns are pale and painted first.
+function paintProteinCoil() {
+  const steps = 260;
+  const turns = 8;
+  const path = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = radians(208) - (radians(236) * i) / steps;
+    path.push(crystalPoint(86 * Math.cos(angle), 14 + 100 * Math.sin(angle)));
+  }
+  const pieces = [];
+  let lastIndex = null;
+  for (let i = 0; i <= steps; i++) {
+    const phase = (i / steps) * turns * TWO_PI;
+    const { nx, ny } = tangentAt(path, i);
+    const point = [path[i][0] + nx * 21 * Math.sin(phase), path[i][1] + ny * 21 * Math.sin(phase)];
+    const halfWidth = 1.5 + 7 * Math.abs(Math.cos(phase));
+    const index = Math.floor((phase + HALF_PI) / PI);
+    if (index !== lastIndex) {
+      const piece = { front: index % 2 === 0, points: [], widths: [] };
+      if (pieces.length > 0) {
+        const previous = pieces[pieces.length - 1];
+        piece.points.push(previous.points[previous.points.length - 1]);
+        piece.widths.push(previous.widths[previous.widths.length - 1]);
+      }
+      pieces.push(piece);
+      lastIndex = index;
+    }
+    const piece = pieces[pieces.length - 1];
+    piece.points.push(point);
+    piece.widths.push(halfWidth);
+  }
+  for (const pass of [false, true]) {
+    for (const piece of pieces) {
+      if (piece.front !== pass || piece.points.length < 3) continue;
+      if (piece.front) {
+        brush.set("pen", "#5a1030", 1.1);
+        brush.wash("#b3305e", 240);
+      } else {
+        brush.set("pen", "#94506c", 0.9);
+        brush.wash("#e2a0b8", 210);
+      }
+      brush.polygon(bandPolygonWidths(piece.points, piece.widths));
+      brush.noWash();
+    }
+  }
+}
+
+// Glowing metal cluster in the crystal's heart.
+function paintMetalCluster() {
+  const [cx, cy] = crystalPoint(0, 0);
+
+  // Glow.
+  brush.noStroke();
+  setWatercolour("#ffd23f", 175, 0.25, 0.2, 0);
+  brush.circle(cx, cy, 64);
+  brush.noFill();
+  for (let i = 0; i < 16; i++) {
+    const angle = (i / 16) * TWO_PI;
+    brush.set("pen", "#e8a317", 1.4);
+    brush.line(cx + 70 * Math.cos(angle), cy + 70 * Math.sin(angle),
+               cx + 86 * Math.cos(angle), cy + 86 * Math.sin(angle));
+  }
+
+  const atoms = [
+    { x: -18, y: -26, r: 13 },
+    { x: 30, y: -30, r: 13 },
+    { x: -26, y: 16, r: 16 },
+    { x: 26, y: 14, r: 16 },
+    { x: -58, y: -44, r: 12 },
+  ];
+  const bonds = [[0, 1], [0, 2], [1, 3], [2, 3], [0, 3], [0, 4]];
+  brush.set("pen", "#4a2f0c", 2.6);
+  for (const [a, b] of bonds) {
+    brush.line(cx + atoms[a].x, cy + atoms[a].y, cx + atoms[b].x, cy + atoms[b].y);
+  }
+  brush.set("pen", "#3a2408", 1.3);
+  setWatercolour("#d18b12", 235, 0.05, 0.3, 0.2);
+  for (const atom of atoms) brush.circle(cx + atom.x, cy + atom.y, atom.r);
+  brush.noFill();
+}
+
+// Cracks from the hit point and shards breaking off the far side.
+function paintShattering(hitX, hitY) {
+  brush.set("pen", "#1b2a36", 1.4);
+  const cracks = [
+    [[0, 0], [22, -14], [34, -8], [58, -34], [70, -30], [92, -62]],
+    [[0, 0], [26, 10], [40, 30], [62, 36], [76, 66]],
+    [[0, 0], [30, -2], [44, 8]],
+  ];
+  for (const crack of cracks) {
+    for (let i = 0; i < crack.length - 1; i++) {
+      brush.line(hitX + crack[i][0], hitY + crack[i][1], hitX + crack[i + 1][0], hitY + crack[i + 1][1]);
+    }
+  }
+  // Jagged break along the right face.
+  const breakLine = crystalPoints([[112, -118], [124, -80], [108, -52], [128, -20], [110, 14], [126, 50], [112, 90]]);
+  for (let i = 0; i < breakLine.length - 1; i++) {
+    brush.line(breakLine[i][0], breakLine[i][1], breakLine[i + 1][0], breakLine[i + 1][1]);
+  }
+
+  // Irregular shards drifting off to the right, just behind the spots.
+  const shards = [
+    [[150, -112], [184, -104], [192, -80], [160, -76]],
+    [[162, -52], [200, -40], [196, -12], [170, -20]],
+    [[156, 10], [184, 18], [190, 46], [164, 40]],
+    [[140, 70], [170, 80], [158, 104]],
+    [[196, -8], [214, 0], [204, 16]],
+  ];
+  for (const shard of shards) {
+    const points = crystalPoints(shard);
+    brush.set("pen", "#16303f", 1.3);
+    brush.wash("#6fb0cc", 210);
+    brush.polygon(points);
+    brush.noWash();
+    // Short motion streak behind each shard.
+    const [sx, sy] = points[0];
+    brush.set("pen", "#6a8ca3", 1);
+    brush.line(sx - 34, sy, sx - 10, sy);
+  }
+}
+
+// ---------- the diffraction spots ----------
+
+function paintDiffraction() {
+  // Rays showing the spots flew out of the crystal.
+  const [ox, oy] = crystalPoint(150, -10);
+  brush.set("2H", "#5f7f96", 1.2);
+  brush.line(ox, oy, PATTERN_X - 20, PATTERN_Y - PATTERN_RADIUS + 4);
+  brush.line(ox, oy, PATTERN_X - 20, PATTERN_Y + PATTERN_RADIUS - 4);
+
+  // Soft disc behind the spots.
+  brush.set("pen", "#35506a", 1.2);
+  setWatercolour("#c9dbe6", 170, 0.06, 0.3, 0.2);
+  brush.circle(PATTERN_X, PATTERN_Y, PATTERN_RADIUS);
+  brush.noFill();
+
+  // Lattice of spots, stronger near the centre.
+  const spacing = 27;
+  const angle = 0.32;
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  brush.noStroke();
+  for (let i = -6; i <= 6; i++) {
+    for (let j = -6; j <= 6; j++) {
+      const x = (i * c - j * s) * spacing;
+      const y = (i * s + j * c) * spacing;
+      const r = Math.hypot(x, y);
+      if (r < 20 || r > PATTERN_RADIUS - 14) continue;
+      if (random() < 0.18) continue;
+      const size = 9.5 - 4.5 * (r / PATTERN_RADIUS) + random(-1, 1);
+      brush.wash("#152a4a", 240 - 80 * (r / PATTERN_RADIUS));
+      brush.circle(PATTERN_X + x, PATTERN_Y + y, size);
+      brush.noWash();
+    }
+  }
+}
+
+// ---------- ribbon ----------
+
+function ribbonCentreLine() {
+  return bezierPoints([PATTERN_X, PATTERN_Y + PATTERN_RADIUS + 8], [360, -40], [235, 150], [LEAF_TIP[0] - 4, LEAF_TIP[1] - 4], 40);
+}
+
+function paintRibbon() {
+  const centre = ribbonCentreLine();
+  const band = bandPolygon(centre, (t) => 70 - 62 * t);
+  // A flat wash first keeps the band even; the watercolour layer adds texture.
+  brush.noStroke();
+  brush.wash("#8fcfb4", 170);
+  brush.polygon(band);
+  brush.noWash();
+  setWatercolour("#5db594", 190, 0.1, 0.3, 0.25);
+  brush.polygon(band);
+  brush.noFill();
+
+  // Downward chevrons.
+  brush.set("pen", "#256b52", 2.2);
+  for (let k = 1; k <= 5; k++) {
+    const i = Math.round(k * 6);
+    const { tx, ty, nx, ny } = tangentAt(centre, i);
+    const w = (70 - 62 * (i / (centre.length - 1))) * 0.62;
+    const [px, py] = centre[i];
+    brush.line(px + nx * w - tx * 14, py + ny * w - ty * 14, px + tx * 10, py + ty * 10);
+    brush.line(px - nx * w - tx * 14, py - ny * w - ty * 14, px + tx * 10, py + ty * 10);
+  }
+
+  // Spots carried in the band turn into bubbles on the way down.
+  // Placed between the chevrons so that no mark crosses a bubble.
+  const carried = [[0.07, -22, 7], [0.22, 20, 7], [0.37, 0, 8], [0.52, 0, 9], [0.67, 0, 9]];
+  for (const [t, offset, size] of carried) {
+    const i = Math.round(t * (centre.length - 1));
+    const { nx, ny } = tangentAt(centre, i);
+    const x = centre[i][0] + nx * offset;
+    const y = centre[i][1] + ny * offset;
+    if (t < 0.3) {
+      brush.noStroke();
+      brush.wash("#152a4a", 220);
+      brush.circle(x, y, size);
+      brush.noWash();
+    } else {
+      paintBubble(x, y, size);
+    }
+  }
+}
+
+// ---------- everyday scene ----------
+
+function paintSunAndWater() {
+  // Sun above the bright surface.
+  brush.set("pen", "#b8791a", 1.3);
+  setWatercolour("#f6b93b", 235, 0.12, 0.35, 0.2);
+  brush.circle(-315, 88, 50);
+  brush.noFill();
+  for (let i = 0; i < 14; i++) {
+    const angle = (i / 14) * TWO_PI + 0.2;
+    brush.set("pen", "#e39a1c", 2);
+    brush.line(-315 + 62 * Math.cos(angle), 88 + 62 * Math.sin(angle),
+               -315 + 84 * Math.cos(angle), 88 + 84 * Math.sin(angle));
+  }
+
+  // Water body with a gently wavy surface.
+  const surface = [];
+  for (let x = -450; x <= 450; x += 15) {
+    surface.push([x, WATER_Y + 5 * Math.sin(x * 0.035)]);
+  }
+  const water = densify(surface.concat([[450, 600], [-450, 600]]), 40);
+  brush.noStroke();
+  brush.wash("#9cc9da", 150);
+  brush.polygon(water);
+  brush.noWash();
+  setWatercolour("#5f9fbd", 120, 0.03, 0.35, 0);
+  brush.polygon(water);
+  brush.noFill();
+  brush.set("pen", "#2c6a87", 1.8);
+  brush.spline(surface, 0.5);
+}
+
+function leafPoint(u, side) {
+  const [bx, by] = LEAF_BASE;
+  const [tx, ty] = LEAF_TIP;
+  const length = Math.hypot(tx - bx, ty - by);
+  const ax = (tx - bx) / length;
+  const ay = (ty - by) / length;
+  const width = LEAF_HALF_WIDTH * Math.pow(Math.sin(Math.PI * Math.pow(u, 0.8)), 0.8) * (1.05 - 0.25 * u);
+  return [bx + ax * u * length - ay * width * side, by + ay * u * length + ax * width * side];
+}
+
+function paintLeaf() {
+  // side -1 is the upper edge on screen, side +1 the lower edge.
+  const upper = [];
+  const lower = [];
+  for (let i = 0; i <= 40; i++) {
+    upper.push(leafPoint(i / 40, -1));
+    lower.push(leafPoint(i / 40, 1));
+  }
+  const outline = upper.concat(lower.slice(1, -1).reverse());
+
+  // Stem.
+  brush.set("pen", "#23501f", 4);
+  brush.line(LEAF_BASE[0] - 70, LEAF_BASE[1] + 40, LEAF_BASE[0], LEAF_BASE[1]);
+
+  brush.noStroke();
+  brush.wash("#3f9c38", 215);
+  brush.polygon(outline);
+  brush.noWash();
+  setWatercolour("#2e8f2b", 170, 0.1, 0.4, 0.3);
+  brush.polygon(outline);
+  brush.noFill();
+  // Shaded half.
+  brush.wash("#1f5e22", 80);
+  brush.polygon(lower.concat([LEAF_TIP, LEAF_BASE]));
+  brush.noWash();
+
+  // Midrib and side veins.
+  brush.set("pen", "#1d4a1c", 2.6);
+  brush.line(LEAF_BASE[0], LEAF_BASE[1], LEAF_BASE[0] + (LEAF_TIP[0] - LEAF_BASE[0]) * 0.96,
+             LEAF_BASE[1] + (LEAF_TIP[1] - LEAF_BASE[1]) * 0.96);
+  brush.set("pen", "#1d4a1c", 1.3);
+  for (let k = 1; k <= 7; k++) {
+    const u = k / 8.5;
+    const [mx, my] = leafPoint(u, 0);
+    for (const side of [1, -1]) {
+      const [ex, ey] = leafPoint(Math.min(0.98, u + 0.12), side * 0.82);
+      const [qx, qy] = leafPoint(u + 0.05, side * 0.45);
+      brush.spline([[mx, my], [qx, qy], [ex, ey]], 0.5);
+    }
+  }
+  brush.set("pen", "#173a16", 1.7);
+  closedOutline(outline, 0.2);
+}
+
+function paintBubble(x, y, r) {
+  brush.set("pen", "#174a63", 1.9);
+  brush.circle(x, y, r);
+  // Curved glint on the upper left of the bubble.
+  brush.set("pen", "#174a63", 1.3);
+  brush.arc(x, y, r * 0.62, radians(100), radians(165));
+}
+
+function paintBubbles() {
+  const sources = [0.24, 0.4, 0.55, 0.7, 0.84];
+  for (const u of sources) {
+    const [sx, sy] = leafPoint(u, -1);
+    let r = 8;
+    let y = sy - 14 - r;
+    let k = 0;
+    while (y - r > WATER_Y + 12) {
+      const x = sx + 9 * Math.sin(k * 1.7 + u * 10);
+      paintBubble(x, y, r);
+      y -= r * 2 + 10 + k * 3;
+      r = Math.min(20, r + 3);
+      k++;
+    }
+    // Little ring where the bubbles reach the surface.
+    brush.set("pen", "#2c6a87", 1.2);
+    brush.spline(ellipsePoints(sx, WATER_Y + 2, 20, 5, 0, PI, 12), 0.5);
+  }
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  // Everyday scene first (it holds the largest washes).
+  paintSunAndWater();
+  paintLeaf();
+  paintBubbles();
+
+  // Science scene.
+  paintDiffraction();
+  paintCrystal();
+  paintProteinCoil();
+  paintMetalCluster();
+  const [hitX, hitY] = crystalPoint(-140, -20);
+  paintShattering(hitX, hitY);
+  paintXray(-450, hitY - 120, hitX, hitY);
+
+  // Ribbon joining the two.
+  paintRibbon();
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tmo: a molecule bursts in the light, sunlight on DNA</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// TMO portrait: "A molecule bursts like a dandelion clock in the sunlight."
+// Top: an X-ray streak hits a ball-and-stick ring molecule; the ring snaps open
+//      and ions and electrons fly outward inside a faint dashed sphere.
+// Bottom: a warm sun shines on a whole, unbroken DNA double helix.
+// Ribbon: a golden band of downward chevrons joins the burst to the DNA.
+//
+// Coordinates: origin at the canvas centre, x -450..450, y -600..600, y down.
+
+const SEED = 31017;
+const PAPER = "#f1e8d6";
+
+// Series colour conventions (used only for the X-ray).
+const XRAY_VIOLET = "#4b1d8f";
+const XRAY_CYAN = "#2fb8d6";
+
+// Palette shared by the molecule and the DNA.
+const CARBON_TEAL = "#1d5c73";
+const BACK_STRAND_TEAL = "#4a8fa6";
+const HYDROGEN_OCHRE = "#d99a2b";
+const BOND_GREY = "#6b6259";
+const ELECTRON_NAVY = "#1b2a4a";
+const INK = "#1c2226";
+const SUN_GOLD = "#f5b814";
+const SUN_DEEP = "#e39a12";
+const RIBBON_GOLD = "#f2c14e";
+
+// Molecule: ring centre, ring radius (atom centres) and atom sizes.
+const RING_X = 30;
+const RING_Y = -300;
+const RING_RADIUS = 100;
+const CARBON_RADIUS = 27;
+const HYDROGEN_RADIUS = 15;
+const SPHERE_RADIUS = 278;
+
+// Ribbon: wide at the burst, narrowing slowly, then closing to a point
+// over its last fifth, like an arrow.
+const RIBBON_START_WIDTH = 124;
+const RIBBON_BODY_END_WIDTH = 78;
+const RIBBON_TIP_START = 0.8;
+
+// DNA helix across the bottom of the canvas.
+const DNA_CENTRE_Y = 452;
+const DNA_AMPLITUDE = 80;
+const DNA_PERIOD = 300;
+const DNA_PHASE_X = 215;       // chosen so the top strand peaks where the ribbon lands
+const DNA_LEFT = -415;
+const DNA_RIGHT = 415;
+const DNA_HALF_WIDTH = 13;
+
+// Sun.
+const SUN_X = -285;
+const SUN_Y = 190;
+const SUN_RADIUS = 72;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- small drawing helpers ----------
+
+function washPolygon(points, colour, opacity) {
+  brush.noStroke();
+  brush.noFill();
+  brush.wash(colour, opacity);
+  brush.polygon(points);
+  brush.noWash();
+}
+
+function washCircle(x, y, radius, colour, opacity) {
+  brush.noStroke();
+  brush.noFill();
+  brush.wash(colour, opacity);
+  brush.circle(x, y, radius);
+  brush.noWash();
+}
+
+// Watercolour layer on top of a flat wash: gives texture and a soft painted edge.
+function watercolourPolygon(points, colour, opacity, bleed, texture) {
+  brush.noStroke();
+  brush.noWash();
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, 0.3);
+  brush.polygon(points);
+  brush.noFill();
+}
+
+function watercolourCircle(x, y, radius, colour, opacity, bleed, texture) {
+  brush.noStroke();
+  brush.noWash();
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, 0.3);
+  brush.circle(x, y, radius);
+  brush.noFill();
+}
+
+function inkCircle(x, y, radius, colour, weight) {
+  brush.noFill();
+  brush.noWash();
+  brush.set("pen", colour, weight);
+  brush.circle(x, y, radius);
+}
+
+function inkPolygon(points, colour, weight) {
+  brush.noFill();
+  brush.noWash();
+  brush.set("pen", colour, weight);
+  brush.beginShape(0);
+  for (const [x, y] of points) brush.vertex(x, y);
+  brush.endShape(true);
+}
+
+// A straight bar of the given width between two points, as a 4-corner polygon.
+function barPoints(x1, y1, x2, y2, halfWidth1, halfWidth2) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const normalX = -(y2 - y1) / length;
+  const normalY = (x2 - x1) / length;
+  return [
+    [x1 + normalX * halfWidth1, y1 + normalY * halfWidth1],
+    [x2 + normalX * halfWidth2, y2 + normalY * halfWidth2],
+    [x2 - normalX * halfWidth2, y2 - normalY * halfWidth2],
+    [x1 - normalX * halfWidth1, y1 - normalY * halfWidth1],
+  ];
+}
+
+// Points along a cubic Bezier curve.
+function bezierPoints(p0, p1, p2, p3, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t) * (1 - t);
+    const b = 3 * (1 - t) * (1 - t) * t;
+    const c = 3 * (1 - t) * t * t;
+    const d = t * t * t;
+    points.push([
+      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+    ]);
+  }
+  return points;
+}
+
+// Unit normal of a polyline at index i (from its neighbours).
+function normalAt(points, i) {
+  const previous = points[Math.max(0, i - 1)];
+  const next = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(next[0] - previous[0], next[1] - previous[1]);
+  return [-(next[1] - previous[1]) / length, (next[0] - previous[0]) / length];
+}
+
+// Closed band around a centre line; widthAt(t) gives the width at fraction t
+// (0 at the start of the line, 1 at its end).
+function bandPolygon(centreLine, widthAt) {
+  const leftSide = [];
+  const rightSide = [];
+  for (let i = 0; i < centreLine.length; i++) {
+    const t = i / (centreLine.length - 1);
+    const halfWidth = widthAt(t) / 2;
+    const [normalX, normalY] = normalAt(centreLine, i);
+    const [x, y] = centreLine[i];
+    leftSide.push([x + normalX * halfWidth, y + normalY * halfWidth]);
+    rightSide.push([x - normalX * halfWidth, y - normalY * halfWidth]);
+  }
+  return leftSide.concat(rightSide.reverse());
+}
+
+// ---------- series conventions: X-ray streak and its starburst ----------
+
+function xrayStreak(x1, y1, x2, y2) {
+  brush.noField();
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const normalX = -(y2 - y1) / length;
+  const normalY = (x2 - x1) / length;
+  washPolygon(barPoints(x1, y1, x2, y2, 2.5, 7), XRAY_VIOLET, 245);
+  brush.set("pen", XRAY_VIOLET, 2.4);
+  brush.line(x1, y1, x2, y2);
+  const edge = 13;
+  brush.set("pen", XRAY_CYAN, 1.4);
+  brush.line(x1 + normalX * edge, y1 + normalY * edge, x2 + normalX * edge, y2 + normalY * edge);
+}
+
+function starburst(x, y, radius) {
+  washCircle(x, y, radius * 0.33, "#ffd84a", 240);
+  for (let i = 0; i < 16; i++) {
+    const angle = (i / 16) * TWO_PI + 0.1;
+    const isLong = i % 2 === 0;
+    const outer = isLong ? radius : radius * 0.6;
+    brush.set("pen", isLong ? XRAY_CYAN : XRAY_VIOLET, isLong ? 1.6 : 1.2);
+    brush.line(x + Math.cos(angle) * radius * 0.3, y + Math.sin(angle) * radius * 0.3,
+               x + Math.cos(angle) * outer, y + Math.sin(angle) * outer);
+  }
+}
+
+// ---------- top: the bursting molecule ----------
+
+// Six carbon positions of the ring; the bond between atoms 1 and 2 has snapped,
+// so those two atoms have sprung apart.
+function carbonPositions() {
+  const positions = [];
+  for (let k = 0; k < 6; k++) {
+    const angle = -HALF_PI + k * (PI / 3);
+    positions.push([RING_X + RING_RADIUS * Math.cos(angle), RING_Y + RING_RADIUS * Math.sin(angle)]);
+  }
+  positions[1] = [RING_X + 125, RING_Y - 98];
+  positions[2] = [RING_X + 125, RING_Y + 98];
+  return positions;
+}
+
+function paintDetectorSphere() {
+  // A faint dashed circle: every fragment is caught.
+  brush.noField();
+  brush.noFill();
+  brush.set("HB", "#7f94a3", 1.3);
+  const dashes = 40;
+  for (let i = 0; i < dashes; i++) {
+    const start = (i / dashes) * TWO_PI;
+    brush.arc(RING_X, RING_Y, SPHERE_RADIUS, start, start + (TWO_PI / dashes) * 0.55);
+  }
+}
+
+function paintBonds(carbons) {
+  // Intact bonds around the ring (0-1 is stretched, 2-3 is stretched, 1-2 is broken).
+  const intact = [[0, 1], [2, 3], [3, 4], [4, 5], [5, 0]];
+  for (const [a, b] of intact) {
+    // Each bar runs from atom edge to atom edge, so nothing sits under the atoms.
+    const [ax, ay] = carbons[a];
+    const [bx, by] = carbons[b];
+    const length = Math.hypot(bx - ax, by - ay);
+    const inset = CARBON_RADIUS - 5;
+    const x1 = ax + ((bx - ax) / length) * inset;
+    const y1 = ay + ((by - ay) / length) * inset;
+    const x2 = bx - ((bx - ax) / length) * inset;
+    const y2 = by - ((by - ay) / length) * inset;
+    washPolygon(barPoints(x1, y1, x2, y2, 8, 8), BOND_GREY, 235);
+    inkPolygon(barPoints(x1, y1, x2, y2, 8, 8), INK, 1.2);
+  }
+  // Broken bond: two short stubs with jagged ends, and snap marks in the gap.
+  const [topX, topY] = carbons[1];
+  const [bottomX, bottomY] = carbons[2];
+  const stubLength = 34;
+  const topStub = [[topX - 8, topY + 20], [topX + 8, topY + 20],
+                   [topX + 8, topY + 20 + stubLength], [topX + 3, topY + 20 + stubLength - 8],
+                   [topX - 2, topY + 20 + stubLength + 2], [topX - 8, topY + 20 + stubLength - 6]];
+  const bottomStub = [[bottomX - 8, bottomY - 20], [bottomX + 8, bottomY - 20],
+                      [bottomX + 8, bottomY - 20 - stubLength + 6], [bottomX + 2, bottomY - 20 - stubLength - 2],
+                      [bottomX - 3, bottomY - 20 - stubLength + 8], [bottomX - 8, bottomY - 20 - stubLength]];
+  washPolygon(topStub, BOND_GREY, 235);
+  inkPolygon(topStub, INK, 1.2);
+  washPolygon(bottomStub, BOND_GREY, 235);
+  inkPolygon(bottomStub, INK, 1.2);
+  const gapX = (topX + bottomX) / 2;
+  const gapY = (topY + bottomY) / 2;
+  brush.set("pen", INK, 1.3);
+  for (let i = 0; i < 6; i++) {
+    const angle = -PI * 0.42 + i * (PI * 0.84 / 5);
+    brush.line(gapX + Math.cos(angle) * 16, gapY + Math.sin(angle) * 16,
+               gapX + Math.cos(angle) * 34, gapY + Math.sin(angle) * 34);
+  }
+}
+
+function paintAttachedHydrogens(carbons) {
+  // Hydrogens still attached on the far side of the ring.
+  const attached = [0, 3, 4];
+  for (const k of attached) {
+    const [x, y] = carbons[k];
+    const directionX = (x - RING_X) / RING_RADIUS;
+    const directionY = (y - RING_Y) / RING_RADIUS;
+    const hx = x + directionX * 58;
+    const hy = y + directionY * 58;
+    const stickStartX = x + directionX * (CARBON_RADIUS - 5);
+    const stickStartY = y + directionY * (CARBON_RADIUS - 5);
+    washPolygon(barPoints(stickStartX, stickStartY, hx, hy, 5, 5), BOND_GREY, 235);
+    washCircle(hx, hy, HYDROGEN_RADIUS, HYDROGEN_OCHRE, 240);
+    inkCircle(hx, hy, HYDROGEN_RADIUS, INK, 1.2);
+  }
+}
+
+function paintCarbons(carbons) {
+  for (const [x, y] of carbons) {
+    washCircle(x, y, CARBON_RADIUS, CARBON_TEAL, 235);
+  }
+  // A small lighter spot on each ball makes it look round.
+  for (const [x, y] of carbons) {
+    washCircle(x - 9, y - 9, 7, "#5b9bb1", 235);
+  }
+  for (const [x, y] of carbons) {
+    inkCircle(x, y, CARBON_RADIUS, INK, 1.4);
+  }
+}
+
+// Ions: ochre hydrogen ions flying out of the gap, with speed lines behind them.
+const FLYING_IONS = [
+  { x: 262, y: -470, fromX: 190, fromY: -405 },
+  { x: 305, y: -300, fromX: 205, fromY: -300 },
+  { x: 258, y: -128, fromX: 190, fromY: -195 },
+];
+
+// Electrons: small navy dots at the ends of fine curved tracks, like seeds on the wind.
+const ELECTRON_TRACKS = [
+  [[95, -420], [100, -490], [140, -545]],
+  [[185, -360], [260, -370], [335, -405]],
+  [[190, -265], [260, -235], [330, -200]],
+  [[105, -175], [125, -120], [165, -75]],
+  [[-45, -185], [-80, -130], [-130, -95]],
+  [[-110, -270], [-165, -255], [-215, -270]],
+  [[40, -470], [0, -520], [-40, -548]],
+];
+
+function paintFlyingFragments() {
+  brush.noField();
+  // Electron tracks and their trailing specks.
+  for (const track of ELECTRON_TRACKS) {
+    brush.set("pen", ELECTRON_NAVY, 1.2);
+    brush.spline(track, 0.5);
+    const [endX, endY] = track[2];
+    const [midX, midY] = track[1];
+    washCircle(midX, midY, 4.5, ELECTRON_NAVY, 230);
+    washCircle(endX, endY, 10, ELECTRON_NAVY, 245);
+  }
+  // Ions with three speed lines behind each.
+  for (const ion of FLYING_IONS) {
+    const length = Math.hypot(ion.x - ion.fromX, ion.y - ion.fromY);
+    const directionX = (ion.x - ion.fromX) / length;
+    const directionY = (ion.y - ion.fromY) / length;
+    const normalX = -directionY;
+    const normalY = directionX;
+    brush.set("pen", HYDROGEN_OCHRE, 1.5);
+    for (let s = -1; s <= 1; s++) {
+      const offset = s * 9;
+      brush.line(ion.fromX + normalX * offset, ion.fromY + normalY * offset,
+                 ion.x - directionX * 24 + normalX * offset, ion.y - directionY * 24 + normalY * offset);
+    }
+    washCircle(ion.x, ion.y, HYDROGEN_RADIUS + 2, HYDROGEN_OCHRE, 245);
+    inkCircle(ion.x, ion.y, HYDROGEN_RADIUS + 2, INK, 1.2);
+  }
+}
+
+// ---------- the ribbon ----------
+
+function ribbonWidthAt(t) {
+  if (t < RIBBON_TIP_START) {
+    return RIBBON_START_WIDTH + (RIBBON_BODY_END_WIDTH - RIBBON_START_WIDTH) * (t / RIBBON_TIP_START);
+  }
+  const tipFraction = (t - RIBBON_TIP_START) / (1 - RIBBON_TIP_START);
+  return RIBBON_BODY_END_WIDTH * (1 - tipFraction) + 4 * tipFraction;
+}
+
+function paintRibbon() {
+  const centreLine = bezierPoints([45, -34], [45, 110], [140, 190], [140, 342], 40);
+  const band = bandPolygon(centreLine, ribbonWidthAt);
+  washPolygon(band, RIBBON_GOLD, 200);
+  watercolourPolygon(band, "#eab53e", 185, 0.1, 0.45);
+  brush.noField();
+  brush.set("pen", "#a7631a", 1.6);
+  brush.beginShape(0.3);
+  for (const [x, y] of band) brush.vertex(x, y);
+  brush.endShape(true);
+  // Downward chevrons inside the band, painted as solid V shapes.
+  const chevronPositions = [0.14, 0.36, 0.58];
+  for (const t of chevronPositions) {
+    const index = Math.round(t * (centreLine.length - 1));
+    const [x, y] = centreLine[index];
+    const halfWidth = ribbonWidthAt(t) / 2;
+    // Chevrons always point straight down (normal = -x), even where the band bends.
+    washPolygon(chevronPoints(x, y, -1, 0, halfWidth * 0.58, Math.max(7, halfWidth * 0.2)), "#a9621a", 235);
+  }
+}
+
+// A downward-pointing V centred on (x, y). The normal points across the band;
+// the tangent (normalY, -normalX) points along the flow.
+function chevronPoints(x, y, normalX, normalY, arm, thickness) {
+  const tangentX = normalY;
+  const tangentY = -normalX;
+  const tipX = x + tangentX * arm * 0.5;
+  const tipY = y + tangentY * arm * 0.5;
+  const leftX = tipX - tangentX * arm + normalX * arm;
+  const leftY = tipY - tangentY * arm + normalY * arm;
+  const rightX = tipX - tangentX * arm - normalX * arm;
+  const rightY = tipY - tangentY * arm - normalY * arm;
+  return [
+    [leftX, leftY], [tipX, tipY], [rightX, rightY],
+    [rightX - tangentX * thickness, rightY - tangentY * thickness],
+    [tipX - tangentX * thickness * 1.45, tipY - tangentY * thickness * 1.45],
+    [leftX - tangentX * thickness, leftY - tangentY * thickness],
+  ];
+}
+
+// ---------- bottom: the sun and the DNA ----------
+
+function paintSun() {
+  washCircle(SUN_X, SUN_Y, 150, "#f6d57a", 70);
+  washCircle(SUN_X, SUN_Y, 112, "#f6d57a", 90);
+  // Rays; the three pointing down-right, toward the DNA, are longer.
+  for (let i = 0; i < 14; i++) {
+    const angle = (i / 14) * TWO_PI;
+    const pointsTowardDna = angle > 0.35 && angle < 1.5;
+    const outer = pointsTowardDna ? 175 : 122;
+    const baseHalf = 0.11;
+    const ray = [
+      [SUN_X + Math.cos(angle - baseHalf) * (SUN_RADIUS + 10), SUN_Y + Math.sin(angle - baseHalf) * (SUN_RADIUS + 10)],
+      [SUN_X + Math.cos(angle) * outer, SUN_Y + Math.sin(angle) * outer],
+      [SUN_X + Math.cos(angle + baseHalf) * (SUN_RADIUS + 10), SUN_Y + Math.sin(angle + baseHalf) * (SUN_RADIUS + 10)],
+    ];
+    washPolygon(ray, SUN_DEEP, 230);
+  }
+  washCircle(SUN_X, SUN_Y, SUN_RADIUS, SUN_GOLD, 240);
+  watercolourCircle(SUN_X, SUN_Y, SUN_RADIUS, "#f0ac14", 185, 0.08, 0.4);
+  inkCircle(SUN_X, SUN_Y, SUN_RADIUS, "#9c6408", 1.4);
+}
+
+function strandY(x, sign) {
+  return DNA_CENTRE_Y + sign * DNA_AMPLITUDE * Math.sin(TWO_PI * (x - DNA_PHASE_X) / DNA_PERIOD);
+}
+
+function strandBand(sign) {
+  const centreLine = [];
+  for (let x = DNA_LEFT; x <= DNA_RIGHT; x += 8) centreLine.push([x, strandY(x, sign)]);
+  return bandPolygon(centreLine, () => DNA_HALF_WIDTH * 2);
+}
+
+function paintDna() {
+  brush.noField();
+  // Back strand first, then the base-pair rungs, then the front strand.
+  const backStrand = strandBand(-1);
+  washPolygon(backStrand, BACK_STRAND_TEAL, 225);
+  watercolourPolygon(backStrand, BACK_STRAND_TEAL, 185, 0.03, 0.35);
+  inkPolygon(backStrand, INK, 1.2);
+
+  for (let x = DNA_LEFT + 12; x <= DNA_RIGHT - 10; x += 19) {
+    const yFront = strandY(x, 1);
+    const yBack = strandY(x, -1);
+    if (Math.abs(yFront - yBack) < 34) continue;
+    const top = Math.min(yFront, yBack) + DNA_HALF_WIDTH - 2;
+    const bottom = Math.max(yFront, yBack) - DNA_HALF_WIDTH + 2;
+    const middle = (top + bottom) / 2;
+    washPolygon([[x - 4.5, top], [x + 4.5, top], [x + 4.5, middle], [x - 4.5, middle]], HYDROGEN_OCHRE, 240);
+    washPolygon([[x - 4.5, middle], [x + 4.5, middle], [x + 4.5, bottom], [x - 4.5, bottom]], "#5aa3a8", 240);
+  }
+
+  const frontStrand = strandBand(1);
+  washPolygon(frontStrand, CARBON_TEAL, 235);
+  watercolourPolygon(frontStrand, CARBON_TEAL, 185, 0.03, 0.35);
+  inkPolygon(frontStrand, INK, 1.3);
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  const carbons = carbonPositions();
+  const hitAtom = carbons[5];
+  const xrayStartX = -450;
+  const xrayStartY = -565;
+  const towardX = hitAtom[0] - xrayStartX;
+  const towardY = hitAtom[1] - xrayStartY;
+  const towardLength = Math.hypot(towardX, towardY);
+  const hitX = hitAtom[0] - (towardX / towardLength) * (CARBON_RADIUS + 4);
+  const hitY = hitAtom[1] - (towardY / towardLength) * (CARBON_RADIUS + 4);
+
+  paintDetectorSphere();
+  paintRibbon();
+  paintSun();
+  paintDna();
+
+  paintBonds(carbons);
+  paintAttachedHydrogens(carbons);
+  paintCarbons(carbons);
+  paintFlyingFragments();
+
+  xrayStreak(xrayStartX, xrayStartY, hitX, hitY);
+  starburst(hitX, hitY, 48);
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>

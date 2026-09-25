@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>qrixs: a stadium wave through a crystal of tiny magnets</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// qRIXS portrait: a tilted crystal grid of atoms, each with a spin arrow.
+// A wave of tilt and colour runs through the arrows like a stadium wave.
+// An X-ray streak hits the crystal and scatters off at an angle.
+// Below: a maglev train floats over a frosty superconducting track, with a
+// power pylon and a lit town behind: superconductors, levitation, loss-free power.
+//
+// Coordinates: canvas centre is the origin, x -450..450, y -600..600, y down.
+
+const SEED = 27182;
+const PAPER = "#f1e8d6";
+
+// Series conventions.
+const XRAY_VIOLET = "#4b1d8f";
+const XRAY_CYAN = "#2fb8d6";
+const BURST_GOLD = "#f2b731";
+
+// Portrait colours.
+const INK = "#1d2430";
+const SLAB_TOP = "#b9cfe2";
+const SLAB_FRONT = "#6f93b5";
+const BOND_GREY = "#5b7188";
+const WAVE_CREST = "#f0a126";   // atoms at the top of the wave
+const WAVE_TROUGH = "#2f68ad";  // atoms at the bottom of the wave
+const WAVE_LINE = "#d98a0c";
+const RIBBON_GOLD = "#e8ac3c";
+const RIBBON_DARK = "#95620f";
+const PYLON_GREY = "#2b3038";
+const TRAIN_BODY = "#3c8dbb";
+const TRAIN_SKIRT = "#23577e";
+const TRAIN_WINDOW = "#1b2c45";
+const ICE_BLUE = "#a6d6ea";
+const ICE_DARK = "#3f8bb3";
+const WINDOW_YELLOW = "#ffc933";
+
+// Crystal grid: atom (i, j) sits at gridPoint(i, j). i runs left to right,
+// j runs from the front row (0) to the back row (ROWS - 1).
+const COLUMNS = 7;
+const ROWS = 5;
+const GRID_X0 = -240;
+const GRID_Y0 = -150;
+const COLUMN_STEP_X = 72;
+const ROW_STEP_X = 30;
+const ROW_STEP_Y = -62;
+
+// Everyday scene.
+const PYLON_X = -185;
+const PYLON_TOP_Y = 112;
+const PYLON_BASE_Y = 360;
+const TRAIN_TOP_Y = 398;
+const TRAIN_BOTTOM_Y = 474;
+const TRACK_TOP_Y = 528;
+const TRACK_BOTTOM_Y = 564;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- geometry helpers ----------
+
+function gridPoint(i, j) {
+  return [GRID_X0 + i * COLUMN_STEP_X + j * ROW_STEP_X, GRID_Y0 + j * ROW_STEP_Y];
+}
+
+function densify(points, maxStep) {
+  const result = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const pieces = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / maxStep));
+    for (let k = 0; k < pieces; k++) {
+      result.push([x1 + (x2 - x1) * (k / pieces), y1 + (y2 - y1) * (k / pieces)]);
+    }
+  }
+  return result;
+}
+
+function quadCurve(start, control, end, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t);
+    const b = 2 * (1 - t) * t;
+    const c = t * t;
+    points.push([a * start[0] + b * control[0] + c * end[0], a * start[1] + b * control[1] + c * end[1]]);
+  }
+  return points;
+}
+
+function frameAt(points, i) {
+  const previous = points[Math.max(0, i - 1)];
+  const next = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(next[0] - previous[0], next[1] - previous[1]);
+  const tangent = [(next[0] - previous[0]) / length, (next[1] - previous[1]) / length];
+  const normal = [-tangent[1], tangent[0]];
+  return { tangent, normal };
+}
+
+// Mix two "#rrggbb" colours; t = 0 gives the first, t = 1 the second.
+function mixHex(first, second, t) {
+  const a = [1, 3, 5].map((k) => parseInt(first.substr(k, 2), 16));
+  const b = [1, 3, 5].map((k) => parseInt(second.substr(k, 2), 16));
+  const mixed = a.map((value, k) => Math.round(value + (b[k] - value) * t));
+  return "#" + mixed.map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+// ---------- painting helpers ----------
+
+function setWatercolour(colour, opacity, bleed, texture, border) {
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, border, false);
+}
+
+function starburst(x, y, radius) {
+  const rays = 12;
+  for (let i = 0; i < rays; i++) {
+    const angle = (i / rays) * TWO_PI + 0.13;
+    const long = i % 2 === 0;
+    const inner = radius * 0.25;
+    const outer = long ? radius : radius * 0.6;
+    brush.set("pen", long ? BURST_GOLD : XRAY_CYAN, long ? 1.6 : 1.3);
+    brush.line(x + inner * Math.cos(angle), y + inner * Math.sin(angle),
+               x + outer * Math.cos(angle), y + outer * Math.sin(angle));
+  }
+  brush.noStroke();
+  brush.wash("#fff4c2", 230);
+  brush.circle(x, y, radius * 0.22);
+  brush.noWash();
+}
+
+// Violet core with a thin cyan edge line. `withBurst` adds the starburst at the end.
+function xrayStreak(x1, y1, x2, y2, coreWeight, withBurst) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length;
+  const uy = (y2 - y1) / length;
+  const nx = -uy;
+  const ny = ux;
+  const halfWidth = coreWeight * 1.4;
+  brush.noStroke();
+  brush.wash(XRAY_VIOLET, 235);
+  brush.polygon([
+    [x1 + nx * halfWidth, y1 + ny * halfWidth],
+    [x2 + nx * halfWidth, y2 + ny * halfWidth],
+    [x2 - nx * halfWidth, y2 - ny * halfWidth],
+    [x1 - nx * halfWidth, y1 - ny * halfWidth],
+  ]);
+  brush.noWash();
+  brush.set("pen", XRAY_VIOLET, coreWeight);
+  brush.line(x1, y1, x2, y2);
+  brush.set("pen", XRAY_CYAN, 1.3);
+  const edge = 8;
+  brush.line(x1 + nx * edge, y1 + ny * edge, x2 + nx * edge, y2 + ny * edge);
+  if (withBurst) starburst(x2, y2, 30);
+}
+
+function paintRibbon(centre, startWidth, endWidth) {
+  const left = [];
+  const right = [];
+  for (let i = 0; i < centre.length; i++) {
+    const { normal } = frameAt(centre, i);
+    const halfWidth = 0.5 * (startWidth + (endWidth - startWidth) * (i / (centre.length - 1)));
+    left.push([centre[i][0] + normal[0] * halfWidth, centre[i][1] + normal[1] * halfWidth]);
+    right.push([centre[i][0] - normal[0] * halfWidth, centre[i][1] - normal[1] * halfWidth]);
+  }
+  const band = left.concat(right.reverse());
+  brush.set("pen", RIBBON_DARK, 1.4);
+  setWatercolour(RIBBON_GOLD, 210, 0.03, 0.35, 0.3);
+  brush.polygon(densify(band, 25));
+  brush.noFill();
+
+  brush.noStroke();
+  brush.wash(RIBBON_DARK, 215);
+  const chevronCount = 4;
+  for (let k = 0; k < chevronCount; k++) {
+    const i = Math.round((k + 0.6) / (chevronCount + 0.2) * (centre.length - 1));
+    const { tangent, normal } = frameAt(centre, i);
+    const halfWidth = 0.32 * (startWidth + (endWidth - startWidth) * (i / (centre.length - 1)));
+    const depth = halfWidth * 0.7;
+    const thickness = 11;
+    const [px, py] = centre[i];
+    const armLeft = [px + normal[0] * halfWidth - tangent[0] * depth, py + normal[1] * halfWidth - tangent[1] * depth];
+    const tip = [px + tangent[0] * depth * 0.4, py + tangent[1] * depth * 0.4];
+    const armRight = [px - normal[0] * halfWidth - tangent[0] * depth, py - normal[1] * halfWidth - tangent[1] * depth];
+    const back = (p) => [p[0] - tangent[0] * thickness, p[1] - tangent[1] * thickness];
+    brush.polygon([armLeft, tip, armRight, back(armRight), back(tip), back(armLeft)]);
+  }
+  brush.noWash();
+}
+
+// ---------- science scene ----------
+
+// Slab corners in grid units (a margin around the atoms; wider on the left,
+// where the X-ray lands).
+function slabCorners() {
+  return {
+    frontLeft: gridPoint(-1.6, -0.55),
+    frontRight: gridPoint(COLUMNS - 1 + 0.6, -0.55),
+    backRight: gridPoint(COLUMNS - 1 + 0.6, ROWS - 1 + 0.55),
+    backLeft: gridPoint(-1.6, ROWS - 1 + 0.55),
+  };
+}
+
+function paintSlab() {
+  const { frontLeft, frontRight, backRight, backLeft } = slabCorners();
+  const thickness = 34;
+  // front face (the slab's thickness)
+  brush.set("pen", INK, 1.5);
+  setWatercolour(SLAB_FRONT, 225, 0, 0.35, 0.3);
+  brush.polygon(densify([frontLeft, frontRight, [frontRight[0], frontRight[1] + thickness],
+                         [frontLeft[0], frontLeft[1] + thickness]], 25));
+  // top face
+  setWatercolour(SLAB_TOP, 200, 0.02, 0.35, 0.3);
+  brush.polygon(densify([frontLeft, frontRight, backRight, backLeft], 25));
+  brush.noFill();
+  // right side face
+  setWatercolour(SLAB_FRONT, 190, 0.02, 0.3, 0.3);
+  brush.polygon(densify([frontRight, backRight, [backRight[0], backRight[1] + thickness],
+                 [frontRight[0], frontRight[1] + thickness]], 25));
+  brush.noFill();
+}
+
+// Wave phase for atom (i, j): travels along i, shifted a little from row to row.
+function wavePhase(i, j) {
+  return i * 1.05 + j * 0.5 + 0.4;
+}
+
+function spinArrow(i, j) {
+  const phase = wavePhase(i, j);
+  const crest = 0.5 + 0.5 * Math.sin(phase);          // 1 at the top of the wave
+  const tilt = 0.45 * Math.cos(phase);                 // lean forward before the crest
+  const length = 22 + 62 * crest;                      // "stand up" at the crest
+  const [x, y] = gridPoint(i, j);
+  const tipX = x + length * Math.sin(tilt);
+  const tipY = y - length * Math.cos(tilt);
+  return { x, y, tipX, tipY, tilt, crest };
+}
+
+function paintBonds() {
+  brush.set("HB", BOND_GREY, 1.3);
+  for (let j = 0; j < ROWS; j++) {
+    const [x1, y1] = gridPoint(0, j);
+    const [x2, y2] = gridPoint(COLUMNS - 1, j);
+    brush.line(x1, y1, x2, y2);
+  }
+  for (let i = 0; i < COLUMNS; i++) {
+    const [x1, y1] = gridPoint(i, 0);
+    const [x2, y2] = gridPoint(i, ROWS - 1);
+    brush.line(x1, y1, x2, y2);
+  }
+}
+
+function paintAtomsAndSpins() {
+  // Back rows first so front arrows sit on top.
+  for (let j = ROWS - 1; j >= 0; j--) {
+    const arrows = [];
+    for (let i = 0; i < COLUMNS; i++) arrows.push(spinArrow(i, j));
+
+    // the wave: a smooth line through the arrow tips of this row
+    brush.set("pen", WAVE_LINE, 2.3);
+    brush.spline(arrows.map((a) => [a.tipX, a.tipY]), 0.5);
+
+    for (const a of arrows) {
+      const colour = mixHex(WAVE_TROUGH, WAVE_CREST, a.crest);
+      // atom
+      brush.set("pen", INK, 1.2);
+      brush.wash(colour, 240);
+      brush.circle(a.x, a.y, 12);
+      brush.noWash();
+      // arrow shaft
+      brush.set("pen", INK, 1.9);
+      brush.line(a.x, a.y, a.tipX, a.tipY);
+      // arrow head
+      const ux = Math.sin(a.tilt);
+      const uy = -Math.cos(a.tilt);
+      const headLength = 15;
+      const headHalf = 7;
+      const baseX = a.tipX - ux * headLength;
+      const baseY = a.tipY - uy * headLength;
+      brush.noStroke();
+      brush.wash(INK, 245);
+      brush.polygon([[a.tipX, a.tipY], [baseX - uy * headHalf, baseY + ux * headHalf],
+                     [baseX + uy * headHalf, baseY - ux * headHalf]]);
+      brush.noWash();
+    }
+  }
+}
+
+function paintXray() {
+  const hit = gridPoint(-1.0, 1.8);
+  xrayStreak(-450, -560, hit[0], hit[1], 2.4, true);
+  // the scattered X-ray leaves at a different angle
+  xrayStreak(hit[0] - 6, hit[1] - 8, -450, -300, 2, false);
+}
+
+// ---------- everyday scene ----------
+
+function paintPylon() {
+  const x = PYLON_X;
+  const top = PYLON_TOP_Y;
+  const base = PYLON_BASE_Y;
+  const waist = top + 70;
+  brush.set("pen", PYLON_GREY, 2.1);
+  // legs
+  brush.line(x - 62, base, x - 16, waist);
+  brush.line(x + 62, base, x + 16, waist);
+  brush.line(x - 16, waist, x - 10, top + 20);
+  brush.line(x + 16, waist, x + 10, top + 20);
+  brush.line(x - 10, top + 20, x, top);
+  brush.line(x + 10, top + 20, x, top);
+  // cross arms
+  brush.line(x - 75, top + 38, x + 75, top + 38);
+  brush.line(x - 58, top + 70, x + 58, top + 70);
+  // bracing
+  brush.set("pen", PYLON_GREY, 1.4);
+  const levels = [waist, waist + 60, waist + 125, base];
+  for (let k = 0; k < levels.length - 1; k++) {
+    const y1 = levels[k];
+    const y2 = levels[k + 1];
+    const half1 = 16 + (62 - 16) * ((y1 - waist) / (base - waist));
+    const half2 = 16 + (62 - 16) * ((y2 - waist) / (base - waist));
+    brush.line(x - half1, y1, x + half2, y2);
+    brush.line(x + half1, y1, x - half2, y2);
+    brush.line(x - half2, y2, x + half2, y2);
+  }
+  // insulators hanging from the arms
+  brush.set("pen", PYLON_GREY, 1.4);
+  for (const [ax, ay] of [[x - 72, top + 38], [x + 72, top + 38], [x - 55, top + 70], [x + 55, top + 70]]) {
+    brush.line(ax, ay, ax, ay + 16);
+  }
+}
+
+function paintCables() {
+  const x = PYLON_X;
+  const ends = [[x + 72, PYLON_TOP_Y + 54], [x + 55, PYLON_TOP_Y + 86]];
+  const townPole = [[178, 262], [178, 280]];
+  for (let k = 0; k < 2; k++) {
+    const [sx, sy] = ends[k];
+    const [ex, ey] = townPole[k];
+    brush.set("pen", INK, 1.3);
+    const span = quadCurve([sx, sy], [(sx + ex) / 2, Math.max(sy, ey) + 45], [ex, ey], 10);
+    brush.spline(span, 0.5);
+    // amber glow: current flowing to the town
+    brush.set("pen", WAVE_LINE, 1.6);
+    brush.spline(span.map(([px, py]) => [px, py - 4]), 0.5);
+    // the left-hand span runs off the canvas
+    const [lx, ly] = [x - (k === 0 ? 72 : 55), sy];
+    brush.spline(quadCurve([lx, ly], [(lx - 450) / 2, ly + 40], [-460, ly - 10], 8), 0.5);
+  }
+  // pole at the edge of town
+  brush.set("pen", PYLON_GREY, 2.1);
+  brush.line(178, 250, 178, 352);
+  brush.line(166, 262, 190, 262);
+}
+
+function paintHouse(left, bottom, width, height, roofHeight, wallColour, roofColour, windows) {
+  const right = left + width;
+  const top = bottom - height;
+  brush.set("pen", INK, 1.3);
+  setWatercolour(wallColour, 215, 0.02, 0.35, 0.3);
+  brush.polygon([[left, bottom], [right, bottom], [right, top], [left, top]]);
+  setWatercolour(roofColour, 225, 0.02, 0.35, 0.3);
+  brush.polygon([[left - 8, top], [right + 8, top], [left + width / 2, top - roofHeight]]);
+  brush.noFill();
+  for (const [wx, wy] of windows) {
+    brush.set("pen", INK, 1.1);
+    brush.wash(WINDOW_YELLOW, 250);
+    brush.polygon([[left + wx, top + wy], [left + wx + 17, top + wy], [left + wx + 17, top + wy + 17], [left + wx, top + wy + 17]]);
+    brush.noWash();
+  }
+}
+
+function paintTown() {
+  paintHouse(200, 352, 70, 58, 34, "#d9c08a", "#51607a", [[12, 16], [41, 16]]);
+  paintHouse(282, 352, 76, 92, 38, "#a9bccb", "#7b4a3a", [[12, 14], [46, 14], [12, 50], [46, 50]]);
+  paintHouse(370, 352, 66, 64, 30, "#b8c99c", "#51607a", [[10, 16], [38, 16]]);
+}
+
+function paintTrack() {
+  // shadow of the floating train on the track (shows the gap)
+  brush.noStroke();
+  brush.set("pen", INK, 1.5);
+  setWatercolour(ICE_BLUE, 240, 0.02, 0.3, 0.3);
+  brush.polygon(densify([[-460, TRACK_TOP_Y], [460, TRACK_TOP_Y], [460, TRACK_BOTTOM_Y], [-460, TRACK_BOTTOM_Y]], 25));
+  brush.noFill();
+  brush.noStroke();
+  brush.wash("#4f8fb3", 190);
+  brush.polygon([[-310, TRACK_TOP_Y + 3], [370, TRACK_TOP_Y + 3], [350, TRACK_TOP_Y + 13], [-300, TRACK_TOP_Y + 13]]);
+  brush.noWash();
+
+  // icicles hanging from the cold track
+  brush.set("pen", ICE_DARK, 1.2);
+  brush.wash("#c7e6f2", 230);
+  for (let x = -430; x < 440; x += 46) {
+    const length = 20 + 12 * ((x * 7) % 3 === 0 ? 1 : 0.4);
+    brush.polygon([[x - 7, TRACK_BOTTOM_Y], [x + 7, TRACK_BOTTOM_Y], [x + 1, TRACK_BOTTOM_Y + length]]);
+  }
+  brush.noWash();
+
+  // frost stars on the track face
+  brush.set("pen", ICE_DARK, 1.2);
+  for (let x = -400; x < 440; x += 92) {
+    const cx = x + 20;
+    const cy = TRACK_TOP_Y + 24;
+    for (let k = 0; k < 3; k++) {
+      const a = (k / 3) * PI;
+      brush.line(cx - 9 * Math.cos(a), cy - 9 * Math.sin(a), cx + 9 * Math.cos(a), cy + 9 * Math.sin(a));
+    }
+  }
+
+  // cold mist curling below the track
+  brush.set("cpencil", "#6d9fba", 1.4);
+  for (let x = -420; x < 420; x += 130) {
+    brush.spline([[x, 590], [x + 30, 578], [x + 60, 590], [x + 90, 580]], 0.6);
+  }
+}
+
+function paintTrain() {
+  const left = -330;
+  const top = TRAIN_TOP_Y;
+  const bottom = TRAIN_BOTTOM_Y;
+  const body = [
+    [left, bottom], [left, top + 10], [left + 10, top], [200, top], [270, top + 6],
+    [330, top + 26], [372, top + 52], [388, bottom - 6], [380, bottom],
+  ];
+  // flat washes keep the floating gap under the train clean
+  brush.set("pen", INK, 1.6);
+  brush.wash(TRAIN_BODY, 235);
+  brush.polygon(densify(body, 25));
+  brush.noWash();
+  // darker skirt along the bottom
+  brush.wash(TRAIN_SKIRT, 240);
+  brush.polygon(densify([[left, bottom], [left, bottom - 18], [384, bottom - 18], [388, bottom - 6], [380, bottom]], 25));
+  brush.noWash();
+  // soft hatched shading along the lower body
+  brush.noStroke();
+  brush.hatch(6, 0.2, { rand: 0.1 });
+  brush.hatchStyle("HB", "#1f4f73", 1);
+  brush.polygon([[left + 4, bottom - 20], [left + 4, top + 46], [360, top + 46], [382, bottom - 20]]);
+  brush.noHatch();
+
+  // windows and windscreen
+  brush.set("pen", INK, 1);
+  brush.wash(TRAIN_WINDOW, 235);
+  for (let x = left + 22; x < 200; x += 58) {
+    brush.polygon([[x, top + 16], [x + 40, top + 16], [x + 40, top + 38], [x, top + 38]]);
+  }
+  brush.polygon([[262, top + 12], [318, top + 30], [338, top + 46], [268, top + 40]]);
+  brush.noWash();
+
+  // speed lines behind the train
+  brush.set("pen", "#4a6378", 1.5);
+  for (const y of [top + 18, top + 40, top + 62]) brush.line(-440, y, -350, y);
+
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  // science scene
+  paintSlab();
+  paintBonds();
+  paintAtomsAndSpins();
+  paintXray();
+
+  // ribbon: the wave rolls on and becomes the power line
+  paintRibbon(quadCurve([-80, -58], [-120, 10], [PYLON_X, PYLON_TOP_Y - 22], 16), 130, 38);
+
+  // everyday scene
+  paintPylon();
+  paintCables();
+  paintTown();
+  paintTrack();
+  paintTrain();
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>

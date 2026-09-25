@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>xcs: twinkling speckles, like stars in a clock</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.3/lib/p5.min.js" integrity="sha384-SomRAPLG739U4EgE9jikBcMmCGPR2HQ/7rMNU5hTKbngPGnPT38K28CUR5P0oVdI" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.brush@2.2.3/dist/p5.brush.js" integrity="sha384-kwWM3zLjD/CdRap70WTKAsSsnuRP+m8UUSUCTvKE0YT9kCV50Lf9T33B819pu4hh" crossorigin="anonymous"></script>
+</head>
+<body>
+<script>
+// XCS portrait: an X-ray streak hits a drop of jostling nanoparticles. Their
+// grainy "speckle" pattern fills a big round window. Three small windows, each
+// with a clock, show the same speckles slowly shifting as time passes.
+// Below: a drinking glass, a smartphone with a glass screen and a squeezed tube
+// of paint/gel: everyday disordered materials.
+//
+// Coordinates: canvas centre is the origin, x -450..450, y -600..600, y down.
+
+const SEED = 16180;
+const PAPER = "#f1e8d6";
+
+// Series conventions.
+const XRAY_VIOLET = "#4b1d8f";
+const XRAY_CYAN = "#2fb8d6";
+const BURST_GOLD = "#f2b731";
+
+// Portrait colours.
+const INK = "#1d2430";
+const SAMPLE_AMBER = "#e8c98c";
+const PARTICLE_COLOURS = ["#2d7f8f", "#b5673a", "#2b4a7a"];
+const WINDOW_FIELD = "#c4d9e2";
+const SPECKLE_DARK = "#16243e";
+const SPECKLE_MID = "#2f6e86";
+const SPECKLE_BRIGHT = "#e9b43a";
+const CLOCK_FACE = "#fbf3df";
+const CLOCK_SWEEP = "#f0c55a";
+const RIBBON_BLUE = "#4d8fa6";
+const RIBBON_DARK = "#1f4d63";
+const GLASS_BLUE = "#b4dbea";
+const WATER_BLUE = "#5fa9cf";
+const PHONE_BEZEL = "#39414f";
+const SCREEN_PALE = "#cbe6f1";
+const ICON_COLOURS = ["#f0b12a", "#3e9e57", "#2c5ca8", "#e27fa3", "#43a5b5", "#9a7a3a"];
+const TUBE_SILVER = "#aeb8c2";
+const GEL_GREEN = "#3e9e57";
+
+// Layout.
+const SAMPLE_X = -300;
+const SAMPLE_Y = -392;
+const SAMPLE_RADIUS = 78;
+const WINDOW_X = 105;
+const WINDOW_Y = -382;
+const WINDOW_RADIUS = 186;
+const SEQUENCE_Y = -86;
+const SEQUENCE_XS = [-262, -32, 198];
+const SEQUENCE_RADIUS = 64;
+const CLOCK_OFFSET_X = 98;
+const CLOCK_OFFSET_Y = -36;
+const CLOCK_RADIUS = 27;
+
+function setup() {
+  createCanvas(900, 1200, WEBGL);
+  pixelDensity(1);
+  randomSeed(SEED);
+  noiseSeed(SEED);
+  brush.seed(SEED);
+  background(PAPER);
+  noLoop();
+}
+
+// ---------- geometry helpers ----------
+
+function ellipsePoints(centreX, centreY, radiusX, radiusY, fromAngle, toAngle, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = fromAngle + (toAngle - fromAngle) * (i / steps);
+    points.push([centreX + radiusX * Math.cos(angle), centreY + radiusY * Math.sin(angle)]);
+  }
+  return points;
+}
+
+function densify(points, maxStep) {
+  const result = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const pieces = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / maxStep));
+    for (let k = 0; k < pieces; k++) {
+      result.push([x1 + (x2 - x1) * (k / pieces), y1 + (y2 - y1) * (k / pieces)]);
+    }
+  }
+  return result;
+}
+
+function rotatePoints(points, centreX, centreY, angle) {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  return points.map(([x, y]) => {
+    const dx = x - centreX;
+    const dy = y - centreY;
+    return [centreX + dx * c - dy * s, centreY + dx * s + dy * c];
+  });
+}
+
+function quadCurve(start, control, end, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = (1 - t) * (1 - t);
+    const b = 2 * (1 - t) * t;
+    const c = t * t;
+    points.push([a * start[0] + b * control[0] + c * end[0], a * start[1] + b * control[1] + c * end[1]]);
+  }
+  return points;
+}
+
+// Points along a cubic Bezier curve.
+function cubicCurve(p0, p1, p2, p3, steps) {
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    const a = u * u * u;
+    const b = 3 * u * u * t;
+    const c = 3 * u * t * t;
+    const d = t * t * t;
+    points.push([a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]]);
+  }
+  return points;
+}
+
+function frameAt(points, i) {
+  const previous = points[Math.max(0, i - 1)];
+  const next = points[Math.min(points.length - 1, i + 1)];
+  const length = Math.hypot(next[0] - previous[0], next[1] - previous[1]);
+  const tangent = [(next[0] - previous[0]) / length, (next[1] - previous[1]) / length];
+  const normal = [-tangent[1], tangent[0]];
+  return { tangent, normal };
+}
+
+// Closed band around a centre line (for tapering ribbons and the paint curl).
+function bandPolygon(centre, startWidth, endWidth) {
+  const left = [];
+  const right = [];
+  for (let i = 0; i < centre.length; i++) {
+    const { normal } = frameAt(centre, i);
+    const halfWidth = 0.5 * (startWidth + (endWidth - startWidth) * (i / (centre.length - 1)));
+    left.push([centre[i][0] + normal[0] * halfWidth, centre[i][1] + normal[1] * halfWidth]);
+    right.push([centre[i][0] - normal[0] * halfWidth, centre[i][1] - normal[1] * halfWidth]);
+  }
+  return left.concat(right.reverse());
+}
+
+function roundedRectPoints(left, top, width, height, radius) {
+  const right = left + width;
+  const bottom = top + height;
+  return [].concat(
+    ellipsePoints(right - radius, top + radius, radius, radius, -HALF_PI, 0, 6),
+    ellipsePoints(right - radius, bottom - radius, radius, radius, 0, HALF_PI, 6),
+    ellipsePoints(left + radius, bottom - radius, radius, radius, HALF_PI, PI, 6),
+    ellipsePoints(left + radius, top + radius, radius, radius, PI, 3 * HALF_PI, 6));
+}
+
+// ---------- painting helpers ----------
+
+function setWatercolour(colour, opacity, bleed, texture, border) {
+  brush.fill(colour, opacity);
+  brush.fillBleed(bleed, "out");
+  brush.fillTexture(texture, border, false);
+}
+
+function closedOutline(points, curvature) {
+  brush.beginShape(curvature);
+  for (const [x, y] of points) brush.vertex(x, y);
+  brush.endShape(true);
+}
+
+function starburst(x, y, radius) {
+  const rays = 12;
+  for (let i = 0; i < rays; i++) {
+    const angle = (i / rays) * TWO_PI + 0.13;
+    const long = i % 2 === 0;
+    const inner = radius * 0.25;
+    const outer = long ? radius : radius * 0.6;
+    brush.set("pen", long ? BURST_GOLD : XRAY_CYAN, long ? 1.6 : 1.3);
+    brush.line(x + inner * Math.cos(angle), y + inner * Math.sin(angle),
+               x + outer * Math.cos(angle), y + outer * Math.sin(angle));
+  }
+  brush.noStroke();
+  brush.wash("#fff4c2", 230);
+  brush.circle(x, y, radius * 0.22);
+  brush.noWash();
+}
+
+function xrayStreak(x1, y1, x2, y2) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length;
+  const uy = (y2 - y1) / length;
+  const nx = -uy;
+  const ny = ux;
+  const halfWidth = 3.4;
+  brush.noStroke();
+  brush.wash(XRAY_VIOLET, 235);
+  brush.polygon([
+    [x1 + nx * halfWidth, y1 + ny * halfWidth],
+    [x2 + nx * halfWidth, y2 + ny * halfWidth],
+    [x2 - nx * halfWidth, y2 - ny * halfWidth],
+    [x1 - nx * halfWidth, y1 - ny * halfWidth],
+  ]);
+  brush.noWash();
+  brush.set("pen", XRAY_CYAN, 1.3);
+  const edge = 8;
+  brush.line(x1 + nx * edge, y1 + ny * edge, x2 + nx * edge - ux * 10, y2 + ny * edge - uy * 10);
+  brush.set("pen", XRAY_VIOLET, 2.4);
+  brush.line(x1, y1, x2, y2);
+  starburst(x2, y2, 30);
+}
+
+function paintRibbon(centre, startWidth, endWidth) {
+  brush.set("pen", RIBBON_DARK, 1.4);
+  setWatercolour(RIBBON_BLUE, 215, 0.03, 0.35, 0.3);
+  brush.polygon(densify(bandPolygon(centre, startWidth, endWidth), 25));
+  brush.noFill();
+
+  brush.noStroke();
+  brush.wash(RIBBON_DARK, 215);
+  const chevronCount = 4;
+  for (let k = 0; k < chevronCount; k++) {
+    const i = Math.round((k + 0.6) / (chevronCount + 0.2) * (centre.length - 1));
+    const { tangent, normal } = frameAt(centre, i);
+    const halfWidth = 0.32 * (startWidth + (endWidth - startWidth) * (i / (centre.length - 1)));
+    const depth = halfWidth * 0.7;
+    const thickness = 11;
+    const [px, py] = centre[i];
+    const armLeft = [px + normal[0] * halfWidth - tangent[0] * depth, py + normal[1] * halfWidth - tangent[1] * depth];
+    const tip = [px + tangent[0] * depth * 0.4, py + tangent[1] * depth * 0.4];
+    const armRight = [px - normal[0] * halfWidth - tangent[0] * depth, py - normal[1] * halfWidth - tangent[1] * depth];
+    const back = (p) => [p[0] - tangent[0] * thickness, p[1] - tangent[1] * thickness];
+    brush.polygon([armLeft, tip, armRight, back(armRight), back(tip), back(armLeft)]);
+  }
+  brush.noWash();
+  // a few speckle grains trickling off the tip towards the glass
+  brush.wash(SPECKLE_DARK, 230);
+  const end = centre[centre.length - 1];
+  const { tangent } = frameAt(centre, centre.length - 1);
+  for (let k = 1; k <= 3; k++) {
+    brush.circle(end[0] + tangent[0] * 14 * k + (k % 2 ? 6 : -6), end[1] + tangent[1] * 14 * k, 4.5 - k);
+  }
+  brush.noWash();
+}
+
+// ---------- science scene ----------
+
+function paintSample() {
+  brush.set("pen", INK, 1.4);
+  setWatercolour(SAMPLE_AMBER, 210, 0.04, 0.4, 0.35);
+  brush.circle(SAMPLE_X, SAMPLE_Y, SAMPLE_RADIUS);
+  brush.noFill();
+
+  // randomly placed, jostling nanoparticles
+  const particles = [];
+  let attempts = 0;
+  while (particles.length < 20 && attempts < 800) {
+    attempts++;
+    const angle = random(TWO_PI);
+    const distance = Math.sqrt(random()) * (SAMPLE_RADIUS - 20);
+    const x = SAMPLE_X + distance * Math.cos(angle);
+    const y = SAMPLE_Y + distance * Math.sin(angle);
+    if (particles.every(([px, py]) => Math.hypot(px - x, py - y) > 27)) particles.push([x, y]);
+  }
+  particles.forEach(([x, y], index) => {
+    brush.set("pen", INK, 1.1);
+    brush.wash(PARTICLE_COLOURS[index % 3], 240);
+    brush.circle(x, y, 9);
+    brush.noWash();
+  });
+  // jiggle marks: little double arcs beside some particles
+  brush.set("pen", INK, 1.1);
+  particles.forEach(([x, y], index) => {
+    if (index % 2 !== 0) return;
+    const side = index % 4 === 0 ? 0 : PI;
+    brush.arc(x, y, 14, side - 0.7, side + 0.7);
+    brush.arc(x, y, 19, side - 0.55, side + 0.55);
+  });
+}
+
+// Speckle grains are made once and reused, so every window shows "the same"
+// pattern. Positions are in units of the window radius (-1..1).
+function makeSpeckles(count, brightShare) {
+  const grains = [];
+  let attempts = 0;
+  while (grains.length < count && attempts < 20000) {
+    attempts++;
+    const angle = random(TWO_PI);
+    const distance = Math.sqrt(random()) * 0.93;
+    // Denser towards the middle, like a real speckle pattern.
+    if (random() > 1.05 - 0.55 * distance) continue;
+    const x = distance * Math.cos(angle);
+    const y = distance * Math.sin(angle);
+    const kind = random() < brightShare ? "bright" : (random() < 0.6 ? "dark" : "mid");
+    grains.push({
+      x, y, kind, size: random(0.7, 1.3), stretch: random(0.7, 1.3), tilt: random(PI),
+      driftX: random(-1, 1), driftY: random(-1, 1), fade: random(),
+    });
+  }
+  return grains;
+}
+
+const SPECKLE_COLOUR = { dark: SPECKLE_DARK, mid: SPECKLE_MID, bright: SPECKLE_BRIGHT };
+
+// A round-ish grain as a small smooth polygon.
+function grainPoints(x, y, radius, stretch, tilt) {
+  const points = [];
+  for (let k = 0; k < 10; k++) {
+    const a = (k / 10) * TWO_PI;
+    const px = radius * stretch * Math.cos(a);
+    const py = (radius / stretch) * Math.sin(a);
+    points.push([x + px * Math.cos(tilt) - py * Math.sin(tilt), y + px * Math.sin(tilt) + py * Math.cos(tilt)]);
+  }
+  return points;
+}
+
+// Draw grains in a window. `step` = how much time has passed (0, 1, 2):
+// grains drift further each step, some fade out and some flare up (twinkle).
+function paintGrains(grains, centreX, centreY, radius, grainScale, drift, step) {
+  for (const kind of ["mid", "dark", "bright"]) {
+    brush.noStroke();
+    brush.wash(SPECKLE_COLOUR[kind], kind === "mid" ? 215 : 240);
+    for (const grain of grains) {
+      const flared = step > 0 && grain.fade > 1 - 0.1 * step;
+      const grainKind = flared ? "bright" : grain.kind;
+      if (grainKind !== kind) continue;
+      let x = grain.x + drift * step * grain.driftX;
+      let y = grain.y + drift * step * grain.driftY;
+      // Some grains vanish and a new one appears elsewhere (rotated position).
+      if (step > 0 && grain.fade < 0.16 * step) {
+        const turn = 1.3 + grain.fade * 4;
+        [x, y] = [grain.x * Math.cos(turn) - grain.y * Math.sin(turn), grain.x * Math.sin(turn) + grain.y * Math.cos(turn)];
+      }
+      if (Math.hypot(x, y) > 0.92) continue;
+      brush.polygon(grainPoints(centreX + x * radius, centreY + y * radius, grain.size * grainScale,
+                                grain.stretch, grain.tilt));
+    }
+    brush.noWash();
+  }
+}
+
+function paintSpeckleWindow() {
+  // soft scattered light from the sample to the window
+  brush.noStroke();
+  brush.wash("#cddde6", 150);
+  brush.polygon([[SAMPLE_X + SAMPLE_RADIUS - 6, SAMPLE_Y - 14], [SAMPLE_X + SAMPLE_RADIUS - 6, SAMPLE_Y + 14],
+                 [WINDOW_X - WINDOW_RADIUS + 12, WINDOW_Y + 120], [WINDOW_X - WINDOW_RADIUS + 12, WINDOW_Y - 120]]);
+  brush.noWash();
+
+  brush.set("pen", INK, 1.3);
+  setWatercolour(WINDOW_FIELD, 205, 0.03, 0.4, 0.3);
+  brush.circle(WINDOW_X, WINDOW_Y, WINDOW_RADIUS);
+  brush.noFill();
+  paintGrains(makeSpeckles(560, 0.07), WINDOW_X, WINDOW_Y, WINDOW_RADIUS, 5.2, 0, 0);
+  // lens rim
+  brush.set("pen", "#2b3140", 3);
+  brush.circle(WINDOW_X, WINDOW_Y, WINDOW_RADIUS + 3);
+  brush.set("pen", "#2b3140", 1.4);
+  brush.circle(WINDOW_X, WINDOW_Y, WINDOW_RADIUS + 13);
+}
+
+function paintClock(x, y, step) {
+  brush.set("pen", INK, 1.5);
+  setWatercolour(CLOCK_FACE, 230, 0, 0, 0);
+  brush.circle(x, y, CLOCK_RADIUS);
+  brush.noFill();
+  // swept time, growing from 12 o'clock
+  const handAngle = -HALF_PI + step * (TWO_PI / 3.2) + 0.9;   // screen angle, clockwise
+  const sweep = [[x, y]];
+  const steps = 12;
+  for (let k = 0; k <= steps; k++) {
+    const a = -HALF_PI + (handAngle + HALF_PI) * (k / steps);
+    sweep.push([x + (CLOCK_RADIUS - 5) * Math.cos(a), y + (CLOCK_RADIUS - 5) * Math.sin(a)]);
+  }
+  brush.noStroke();
+  brush.wash(CLOCK_SWEEP, 200);
+  brush.polygon(sweep);
+  brush.noWash();
+  // ticks
+  brush.set("pen", INK, 1.2);
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * TWO_PI;
+    const inner = k % 3 === 0 ? CLOCK_RADIUS - 8 : CLOCK_RADIUS - 5;
+    brush.line(x + inner * Math.cos(a), y + inner * Math.sin(a),
+               x + (CLOCK_RADIUS - 2) * Math.cos(a), y + (CLOCK_RADIUS - 2) * Math.sin(a));
+  }
+  // hand
+  brush.set("pen", INK, 2);
+  brush.line(x, y, x + (CLOCK_RADIUS - 6) * Math.cos(handAngle), y + (CLOCK_RADIUS - 6) * Math.sin(handAngle));
+  brush.line(x, y, x, y - (CLOCK_RADIUS - 14));
+}
+
+function paintSequence() {
+  const grains = makeSpeckles(46, 0.08);
+  SEQUENCE_XS.forEach((x, step) => {
+    brush.set("pen", INK, 1.3);
+    setWatercolour(WINDOW_FIELD, 205, 0.03, 0.4, 0.3);
+    brush.circle(x, SEQUENCE_Y, SEQUENCE_RADIUS);
+    brush.noFill();
+    paintGrains(grains, x, SEQUENCE_Y, SEQUENCE_RADIUS, 6.4, 0.13, step);
+    brush.set("pen", "#2b3140", 2.6);
+    brush.circle(x, SEQUENCE_Y, SEQUENCE_RADIUS + 3);
+    paintClock(x + CLOCK_OFFSET_X, SEQUENCE_Y + CLOCK_OFFSET_Y, step);
+  });
+}
+
+// ---------- everyday scene ----------
+
+const GLASS_LEFT_TOP = -118;
+const GLASS_RIGHT_TOP = 78;
+const GLASS_LEFT_BOTTOM = -96;
+const GLASS_RIGHT_BOTTOM = 56;
+const GLASS_TOP = 214;
+const GLASS_BOTTOM = 500;
+const WATER_TOP = 300;
+
+function glassXAt(y, side) {
+  const t = (y - GLASS_TOP) / (GLASS_BOTTOM - GLASS_TOP);
+  return side < 0 ? GLASS_LEFT_TOP + (GLASS_LEFT_BOTTOM - GLASS_LEFT_TOP) * t
+                  : GLASS_RIGHT_TOP + (GLASS_RIGHT_BOTTOM - GLASS_RIGHT_TOP) * t;
+}
+
+function sparkle(x, y, size) {
+  brush.set("pen", BURST_GOLD, 1.8);
+  brush.line(x - size, y, x + size, y);
+  brush.line(x, y - size, x, y + size);
+  brush.set("pen", XRAY_CYAN, 1.2);
+  brush.line(x - size * 0.45, y - size * 0.45, x + size * 0.45, y + size * 0.45);
+  brush.line(x - size * 0.45, y + size * 0.45, x + size * 0.45, y - size * 0.45);
+}
+
+function paintGlass() {
+  const centreX = (GLASS_LEFT_TOP + GLASS_RIGHT_TOP) / 2;
+  const rimRadiusX = (GLASS_RIGHT_TOP - GLASS_LEFT_TOP) / 2;
+  const baseRadiusX = (GLASS_RIGHT_BOTTOM - GLASS_LEFT_BOTTOM) / 2;
+  const body = [[GLASS_LEFT_TOP, GLASS_TOP]].concat(
+    densify([[GLASS_LEFT_TOP, GLASS_TOP], [GLASS_LEFT_BOTTOM, GLASS_BOTTOM]], 30).slice(1),
+    ellipsePoints((GLASS_LEFT_BOTTOM + GLASS_RIGHT_BOTTOM) / 2, GLASS_BOTTOM, baseRadiusX, 14, PI, 0, 14),
+    densify([[GLASS_RIGHT_BOTTOM, GLASS_BOTTOM], [GLASS_RIGHT_TOP, GLASS_TOP]], 30).slice(1),
+    ellipsePoints(centreX, GLASS_TOP, rimRadiusX, 16, 0, -PI, 16));
+  brush.set("pen", INK, 1.5);
+  setWatercolour(GLASS_BLUE, 200, 0.02, 0.3, 0.3);
+  brush.polygon(body);
+  // water
+  const waterLeft = glassXAt(WATER_TOP, -1) + 5;
+  const waterRight = glassXAt(WATER_TOP, 1) - 5;
+  const water = ellipsePoints((waterLeft + waterRight) / 2, WATER_TOP, (waterRight - waterLeft) / 2, 12, PI, 0, 16).concat(
+    densify([[waterRight, WATER_TOP], [GLASS_RIGHT_BOTTOM - 6, GLASS_BOTTOM - 26]], 30).slice(1),
+    ellipsePoints((GLASS_LEFT_BOTTOM + GLASS_RIGHT_BOTTOM) / 2, GLASS_BOTTOM - 26, baseRadiusX - 6, 12, 0, PI, 14),
+    densify([[GLASS_LEFT_BOTTOM + 6, GLASS_BOTTOM - 26], [waterLeft, WATER_TOP]], 30).slice(1));
+  brush.set("pen", "#2a5f80", 1.1);
+  setWatercolour(WATER_BLUE, 200, 0.02, 0.35, 0.3);
+  brush.polygon(water);
+  brush.noFill();
+  // thick glass base
+  brush.set("pen", "#2a5f80", 1.1);
+  brush.spline(ellipsePoints((GLASS_LEFT_BOTTOM + GLASS_RIGHT_BOTTOM) / 2, GLASS_BOTTOM - 22, baseRadiusX - 3, 12, PI, 0, 12), 0.5);
+  // rim ellipse
+  brush.set("pen", INK, 1.5);
+  brush.circle(0, 0, 0.01);
+  brush.spline(ellipsePoints(centreX, GLASS_TOP, rimRadiusX, 16, 0, TWO_PI, 24), 0.5);
+  // shine: white streaks down the glass
+  brush.noStroke();
+  brush.wash("#ffffff", 190);
+  brush.polygon([[glassXAt(GLASS_TOP + 30, -1) + 22, GLASS_TOP + 30], [glassXAt(GLASS_TOP + 30, -1) + 40, GLASS_TOP + 30],
+                 [glassXAt(GLASS_BOTTOM - 40, -1) + 36, GLASS_BOTTOM - 40], [glassXAt(GLASS_BOTTOM - 40, -1) + 20, GLASS_BOTTOM - 40]]);
+  brush.polygon([[glassXAt(GLASS_TOP + 40, -1) + 52, GLASS_TOP + 40], [glassXAt(GLASS_TOP + 40, -1) + 58, GLASS_TOP + 40],
+                 [glassXAt(GLASS_TOP + 180, -1) + 56, GLASS_TOP + 180], [glassXAt(GLASS_TOP + 180, -1) + 50, GLASS_TOP + 180]]);
+  brush.noWash();
+  // sparkle
+  sparkle(GLASS_RIGHT_TOP - 8, GLASS_TOP - 4, 20);
+  sparkle(GLASS_LEFT_TOP - 20, GLASS_TOP + 60, 14);
+  sparkle(GLASS_RIGHT_TOP + 26, GLASS_TOP + 110, 12);
+}
+
+function paintPhone() {
+  const left = -418;
+  const top = 176;
+  const width = 206;
+  const height = 384;
+  const bezel = 14;
+  const outer = densify(roundedRectPoints(left, top, width, height, 30), 20);
+  const screen = densify(roundedRectPoints(left + bezel, top + bezel + 16, width - 2 * bezel, height - 2 * bezel - 34, 12), 20);
+  // body
+  brush.set("pen", INK, 1.6);
+  setWatercolour(PHONE_BEZEL, 235, 0, 0.3, 0.3);
+  brush.polygon(outer);
+  brush.noFill();
+  // glass screen (pale, lit)
+  brush.set("pen", "#11151c", 1.2);
+  setWatercolour(SCREEN_PALE, 255, 0, 0.2, 0.2);
+  brush.polygon(screen);
+  setWatercolour(SCREEN_PALE, 200, 0, 0.2, 0);
+  brush.polygon(screen);
+  brush.noFill();
+  // app icons
+  const iconSize = 36;
+  const gapX = (width - 2 * bezel - 3 * iconSize) / 4;
+  let colourIndex = 0;
+  for (let row = 0; row < 4; row++) {
+    for (let column = 0; column < 3; column++) {
+      const x = left + bezel + gapX + column * (iconSize + gapX);
+      const y = top + bezel + 40 + row * (iconSize + 30);
+      brush.set("pen", INK, 1);
+      brush.wash(ICON_COLOURS[colourIndex % ICON_COLOURS.length], 245);
+      brush.polygon(roundedRectPoints(x, y, iconSize, iconSize, 8));
+      brush.noWash();
+      colourIndex++;
+    }
+  }
+  // glint across the glass
+  brush.noStroke();
+  brush.wash("#ffffff", 150);
+  brush.polygon([[left + bezel + 6, top + 300], [left + width - bezel - 6, top + 150],
+                 [left + width - bezel - 6, top + 185], [left + bezel + 6, top + 335]]);
+  brush.noWash();
+  // camera dot and home bar (small flat dark shapes, no lines)
+  brush.noStroke();
+  brush.wash("#11151c", 240);
+  brush.circle(left + width / 2, top + 15, 5);
+  brush.polygon(roundedRectPoints(left + width / 2 - 28, top + height - 16, 56, 8, 4));
+  brush.noWash();
+}
+
+function paintTube() {
+  // Local frame: tube axis along x, nozzle at x = -120, crimped end at x = +125.
+  const centreX = 305;
+  const centreY = 300;
+  const angle = -0.6;
+  const toScreen = (points) => rotatePoints(points.map(([x, y]) => [centreX + x, centreY + y]), centreX, centreY, angle);
+  const body = [
+    [-92, -24], [-60, -36], [100, -40], [118, -44], [124, -38], [128, -30], [124, -20], [128, -10], [124, 0],
+    [128, 10], [124, 20], [128, 30], [124, 38], [118, 44], [100, 40], [-60, 36], [-92, 24],
+  ];
+  brush.set("pen", INK, 1.5);
+  setWatercolour(TUBE_SILVER, 245, 0, 0.3, 0.3);
+  brush.polygon(densify(toScreen(body), 20));
+  // coloured band (no writing)
+  setWatercolour(GEL_GREEN, 255, 0, 0.2, 0.3);
+  brush.polygon(toScreen([[0, -38], [48, -39], [48, 39], [0, 38]]));
+  // nozzle
+  setWatercolour("#8b96a2", 235, 0, 0.3, 0.3);
+  brush.polygon(toScreen([[-92, -14], [-118, -12], [-118, 12], [-92, 14]]));
+  brush.noFill();
+  // squeeze wrinkles
+  brush.set("pen", INK, 1.1);
+  const wrinkles = toScreen([[70, -38], [62, -8], [84, 22], [90, 40]]);
+  brush.spline(wrinkles, 0.5);
+
+  // the curl of paint / gel coming out of the nozzle
+  const nozzle = toScreen([[-122, 0]])[0];
+  const curl = [nozzle, [nozzle[0] - 22, nozzle[1] + 40], [nozzle[0] - 22, nozzle[1] + 90],
+                [nozzle[0] + 8, nozzle[1] + 128], [nozzle[0] + 62, nozzle[1] + 140],
+                [nozzle[0] + 110, nozzle[1] + 122], [nozzle[0] + 118, nozzle[1] + 88]];
+  const smooth = [];
+  for (let k = 0; k < curl.length - 1; k++) {
+    for (let s = 0; s < 4; s++) {
+      const t = s / 4;
+      smooth.push([curl[k][0] + (curl[k + 1][0] - curl[k][0]) * t, curl[k][1] + (curl[k + 1][1] - curl[k][1]) * t]);
+    }
+  }
+  smooth.push(curl[curl.length - 1]);
+  brush.set("pen", "#1e4f2b", 1.5);
+  brush.wash(GEL_GREEN, 200);
+  setWatercolour(GEL_GREEN, 255, 0, 0.2, 0.3);
+  closedOutline(bandPolygon(smooth, 22, 30), 0.6);
+  brush.noWash();
+  brush.noFill();
+  // rounded end of the curl
+  brush.set("pen", "#1e4f2b", 1.5);
+  brush.wash(GEL_GREEN, 200);
+  setWatercolour(GEL_GREEN, 255, 0, 0.2, 0.3);
+  brush.circle(curl[curl.length - 1][0], curl[curl.length - 1][1], 15);
+  brush.noFill();
+  brush.noWash();
+}
+
+function draw() {
+  brush.scaleBrushes(4);
+  brush.noField();
+
+  // science scene
+  paintSample();
+  xrayStreak(-450, -598, SAMPLE_X - SAMPLE_RADIUS * 0.72, SAMPLE_Y - SAMPLE_RADIUS * 0.72);
+  paintSpeckleWindow();
+  paintSequence();
+
+  // ribbon: the speckles trickle down and become the sparkle on the glass
+  paintRibbon(cubicCurve([-32, 14], [-32, 80], [-20, 110], [-20, 168], 16), 132, 40);
+
+  // everyday scene
+  paintGlass();
+  paintPhone();
+  paintTube();
+
+  window.__renderDone = true;
+}
+</script>
+</body>
+</html>
